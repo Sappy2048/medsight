@@ -1,0 +1,39 @@
+# ─── LLM ────────────────────────────────────────────────
+groq
+
+# ─── Orchestration ───────────────────────────────────────
+langgraph
+langchain-core
+
+# ─── API & Async ─────────────────────────────────────────
+fastapi
+uvicorn[standard]
+httpx                   # Async HTTP client for DailyMed + RxNorm calls
+
+# ─── Data Validation ─────────────────────────────────────
+pydantic
+pydantic-settings        # For loading config from .env
+
+# ─── XML Parsing ─────────────────────────────────────────
+lxml                     # DailyMed returns SPL XML — needed in fda_client.py
+
+# ─── Databases ───────────────────────────────────────────
+asyncpg                  # Async PostgreSQL driver
+sqlalchemy[asyncio]      # ORM + async session support
+
+# ─── Indian Medicine Dataset ──────────────────────────────
+pandas
+rapidfuzz                # Fuzzy matching for Drug Resolution Agent
+
+# ─── Diff Engine ─────────────────────────────────────────
+deepdiff                 # Structural JSON diff in Temporal Agent
+
+# ─── Environment ─────────────────────────────────────────
+python-dotenv
+
+# ─── (comment out until needed) ───────────────────
+# neo4j                  # Neo4j AuraDB driver
+# qdrant-client          # Vector DB for ICMR RAG
+# fastembed              # Fast embedding model for Qdrant ingestion
+# PyMuPDF                # ICMR PDF extraction (pip install pymupdf)
+# sentence-transformers  # BGE-Reranker Large
