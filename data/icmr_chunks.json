@@ -1,0 +1,308 @@
+[
+    {
+        "drug": "Aspirin",
+        "category": "contraindication",
+        "text": "4.12.8Negative recommendation: Do not use low-dose aspirin in hypertensive patients without cardiovascular disease and who are at low-moderate risk 97Screening, Diagnosis, Assessment, and Management",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "recommendation",
+        "text": "4.12.3Low dose aspirin may be considered for those hypertensives who are well controlled and have a high cardiovascular risk (Grade 3 hypertension",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "contraindication",
+        "text": "4.12.4Negative recommendation: Do not use low-dose aspirin in hypertensive patients without cardiovascular disease and who are at low-moderate risk as the risk of major bleeds (intracranial",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "recommendation",
+        "text": "dose increase or decision to add another drug IHG The guideline may clearly Phrasing has been changed mention that aspirin is not indicated for primary prevention, instead of “ it is of IHG Criteria for starting",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "recommendation",
+        "text": "whether statins and/or aspirin are indicated, to reduce cardiovascular 61Screening, Diagnosis, Assessment, and Management of Primary Hypertension",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "interaction",
+        "text": "channel blocker and an ACE inhibitor, along with aspirin and a statin in a pooled public procurement based system is as low as under a rupee a day",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "treatment_protocol",
+        "text": "26Screening, Diagnosis, Assessment, and Management of Primary Hypertension 4.12.5The use of low dose aspirin in patients with diabetes without cardiovascular or cerebrovascular disease is not recommended in view of the uncertain risk-benefit ratio",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "treatment_protocol",
+        "text": "98Screening, Diagnosis, Assessment, and Management of Primary Hypertension Aspirin: Aspirin in a dose of 75 mg should be available in the public health system for use in well",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "recommendation",
+        "text": "4.12.7Low dose aspirin may be considered for those hypertensives who are well controlled and have a high cardiovascular risk (Grade 3 hypertension",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "treatment_protocol",
+        "text": "98Screening, Diagnosis, Assessment, and Management of Primary Hypertension Aspirin: Aspirin in a dose of 75 mg should be available in the public health system for use in well controlled hypertensives",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "recommendation",
+        "text": "Adjunctive drugs like statin, and aspirin will also be required",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "contraindication",
+        "text": "z If the symptoms suggest suspicion of unstable angina / acute myocardial infarction (MI), give aspirin (300 mg to be chewed) and statin (e.g",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "dosage_caution",
+        "text": "4.12.9The use of low dose aspirin in patients with diabetes without cardiovascular or cerebrovascular disease is not recommended in view of the uncertain risk-benefit ratio",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "recommendation",
+        "text": "whether statins and/or aspirin are indicated, to reduce cardiovascular Which other associated conditions will need management (diabetes",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "dosage_caution",
+        "text": "It may also indicate the need for other therapies like low-dose aspirin and statin to reduce cardiovascular risk",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Aspirin",
+        "category": "recommendation",
+        "text": "large meta-analysis(75), have indicated the situations where the potential benefit outweighs the harms, and recommended aspirin in the secondary prevention of cardiovascular disease",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Lisinopril",
+        "category": "interaction",
+        "text": "the basis of availability and affordability include amlodipine, (a long acting calcium channel blocker); enalapril or lisinopril, (ACE inhibitor); low dose hydrochlorothiazide thiazide) and if required and losartan",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Lisinopril",
+        "category": "dosage_caution",
+        "text": "enalapril/Lisinopril , thiazide, low cost enalapril dose is 5-40 mg",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Lisinopril",
+        "category": "dosage_caution",
+        "text": "the basis of availability and affordability include amlodipine, (a long acting calcium channel blocker); enalapril or lisinopril, (ACE inhibitor); low dose hydrochlorothiazide, (thiazide) and if required and losartan",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Lisinopril",
+        "category": "interaction",
+        "text": "Angiotensin converting enzyme inhibitors Angiotensin receptor blockers Telmisartan 40 mg",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "dosage_caution",
+        "text": "Below 45 ml/min, the dose should be halved and no patient started anew on metformin; the drug should be stopped if the eGFR drops below 30 ml/min",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "dosage_caution",
+        "text": "max) (mg) excretion Daily dosage Predominant Frequency Duration of Drug name range",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "recommendation",
+        "text": "Consider all insulin HbA1c < 9% HbA1c > 9% Consider Asymptomatic therapy Monotherapy with metformin HbA1c not at HbA1c at Continue target target monitor Dual therapy Metformin plus",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "dosage_caution",
+        "text": "Monotherapy with metformin HbA1c not at HbA1c at Continue target target monitor Dual therapy Metformin plus First choice Second choice SU DPP 4 SGLT2 AGI Glinides TZD GLP1 inhibitors inhibitors RA",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "interaction",
+        "text": "Repaglinide and Nateglinide); SGLT2i- Sodium glucose cotransporter-2 inhibitor with or without oral agents If metformin is contraindicated, monotherapy can be initiated with any of the other classes of oral agents Monitor",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "dosage_caution",
+        "text": "z Alcohol abuse z Severe infections METFORMIN IN RENAL INSUFFICIENCY The dose of metformin needs adjustment based on the patient’s renal function",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "recommendation",
+        "text": "Metformin is the only biguanide available in clinical practice",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "recommendation",
+        "text": "and especially in those with combined IFG and IGT where progression to type 2 diabetes appear imminent, use of metformin in addition to lifestyle measures may be considered especially in Indians who progress rapidly to diabetes from the",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "recommendation",
+        "text": "Gliptins are best used in combination with metformin as second line of therapy",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "dosage_caution",
+        "text": "z Severe infections METFORMIN IN RENAL INSUFFICIENCY The dose of metformin needs adjustment based on the patient’s renal function as assessed by the estimated glomerular filtration rate",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "recommendation",
+        "text": "After the Metformin in GDM (MIG) study, many centres have started using metformin as first line in GDM",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Metformin",
+        "category": "dosage_caution",
+        "text": "Metformin can be given in full doses if the eGFR is above 60 ml/min",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Ciprofloxacin",
+        "category": "treatment_protocol",
+        "text": "Ciprofloxacin 500 In pregnancy the mg BD for 3-5 days duration of treatment is Acute E.coli, Piperacillin Imipenem 500",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Ciprofloxacin",
+        "category": "recommendation",
+        "text": "The preferred antibiotics include quinolones, such as ciprofloxacin with or without rifampin",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Ciprofloxacin",
+        "category": "treatment_protocol",
+        "text": "Cholera V.cholerae Doxycycline Azithromycin 1 Rehydration 300 mg PO stat gm PO stat (oral/IV Ciprofloxacin 500 mg BD for Antibiotics are 3 days adjuvant therapy Bacterial Shigella, Ceftriaxone 2 Azithromycin 1",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Ciprofloxacin",
+        "category": "recommendation",
+        "text": "infections Bacteroides sp -sulbactam 3 IV od De-escalate to eg in IAI g IV q12h (carbapenems ciprofloxacin, co pyelonephrit preferred for trimoxazole or is or intra- more seriously third generation abdominal ill patients) cephalosporin if",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Ciprofloxacin",
+        "category": "recommendation",
+        "text": "rhinosinusitis H.influenzae, 1gm oral BD for 7 headache or M. catarrhalis days Ciprofloxacin 500 cough mg BD for 7 days persisit are indicated",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Ciprofloxacin",
+        "category": "recommendation",
+        "text": "q24h; alternative: TMP SMZ or imipenem or Ochrobactrum anthropi TMP-SMZ, 3–5 mg/kg q8h; or ciprofloxacin 400 mg q12h alternative: imipenem Malassezia furfur Amphotericin",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Ciprofloxacin",
+        "category": "treatment_protocol",
+        "text": "Nitrofurantoin Co-trimoxazole Obtain urine E.coli, Klebsiella) 100 mg BD for 5 DS BD or cultures before days ciprofloxacin antibiotics 500 mg BD for 3 modify therapy days based on Acute Enterobacteriaceae Piperacillin- Imipenem- Obtain urine",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Ciprofloxacin",
+        "category": "treatment_protocol",
+        "text": "wks sulbactam 3 gm IV Treatment may Ciprofloxacin 500 12 hourly be needed for IV OD or",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Ciprofloxacin",
+        "category": "treatment_protocol",
+        "text": "Duration of or ciprofloxacin treatment: 10-14 azithromycin 750 mg bd days",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Ciprofloxacin",
+        "category": "dosage_caution",
+        "text": "Caspofungin 70 mg IV as loading dose followed by 50 mg IV Q24H (OD) from next day Ciprofloxacin 400 mg IV Q8H (TID) or 750 mg PO Q12H (BID Clindamycin 300-600 mg IV Q6H",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Azithromycin",
+        "category": "treatment_protocol",
+        "text": "Ciprofloxacin 500 mg BD for Antibiotics are 3 days adjuvant therapy Bacterial Shigella, Ceftriaxone 2 Azithromycin 1 dysentery Campylobacter, non gm IV OD for 5 gm od x 3d",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Azithromycin",
+        "category": "treatment_protocol",
+        "text": "Duration of or ciprofloxacin treatment: 10-14 azithromycin 750 mg bd days",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Azithromycin",
+        "category": "recommendation",
+        "text": "Adjunctive azithromycin prophylaxis for cesarean delivery",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Azithromycin",
+        "category": "dosage_caution",
+        "text": "Azithromycin 500 mg IV Q24H (OD Caspofungin 70 mg IV as loading dose followed by 50 mg IV Q24H",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Azithromycin",
+        "category": "treatment_protocol",
+        "text": "4 Rickettsial Orientia Doxycycline Azithromycin Duration of Rickettsia IV",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Azithromycin",
+        "category": "recommendation",
+        "text": "pneumonia agents (Mycoplasma, Chlamydia, clarithromycin azithromycin+ throat swab/BAL/endotracheal Legionella), respiratory viruses or azithromycin Teicoplanin/Vancomycin secretion) for respiratory viral influenza A, influenza B, RSV, PCR and consider early empirical",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Amoxicillin",
+        "category": "dosage_caution",
+        "text": "Anaerobes OR single dose IV fistulas cefuroxime 1.5 gm 500 mg IV OR single dose IV 1.2 gm amoxicillin clavulanic acid",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Amoxicillin",
+        "category": "treatment_protocol",
+        "text": "bacterial hemolytic penicillin 12 laks confirm GABHS on pharyngitis streptococci units IM or culture before GABHS) amoxicillin 500 treating mg PO q8h for 10 Head and Polymicrobial Clindamycin 600 Piperacillin- Duration: At least 1",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    },
+    {
+        "drug": "Amoxicillin",
+        "category": "recommendation",
+        "text": "and skin Staphylococci 1st Line Local soft-tissue & Streptococci Clindamycin 300-400 mg qid PO Mupirocin infections Alternative: ointment Amoxicillin-clavulanate 875/125 Apply to mg bid po lesions bid Erysipelas, Streptococci Penicillin 2–4 million In penicillin",
+        "source": "ICMR_Antimicrobial_Guidelines_2019"
+    }
+]
