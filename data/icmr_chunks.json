@@ -67,7 +67,7 @@
     },
     {
         "drug": "Aspirin",
-        "category": "contraindication",
+        "category": "recommendation",
         "text": "z If the symptoms suggest suspicion of unstable angina / acute myocardial infarction (MI), give aspirin (300 mg to be chewed) and statin (e.g",
         "source": "ICMR_Antimicrobial_Guidelines_2019"
     },
