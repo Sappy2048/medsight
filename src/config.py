@@ -1,3 +1,9 @@
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 SEVERITY_ONTOLOGY = {
     "contraindicated": 5,
     "avoid":           4,
@@ -9,6 +15,14 @@ SEVERITY_ONTOLOGY = {
 MVP_DRUGS = ["Warfarin", "Azithromycin", "Metformin", "Ibuprofen", "Lisinopril"]
 
 GROQ_MODEL        = "llama-3.1-8b-instant"
+
+QDRANT_URL        = os.getenv("QDRANT_URL")
+QDRANT_API_KEY    = os.getenv("QDRANT_API_KEY")
+QDRANT_COLLECTION = "icmr_guidelines"
+EMBEDDING_MODEL   = "all-MiniLM-L6-v2"
+EMBEDDING_DIM     = 384
+CHUNK_SIZE        = 500
+CHUNK_OVERLAP     = 50
 
 OPENFDA_BASE_URL  = "https://api.fda.gov/drug/label.json"
 RXNORM_BASE_URL   = "https://rxnav.nlm.nih.gov/REST"
