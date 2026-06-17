@@ -20,7 +20,7 @@ Exposed function:
 
 import json
 import logging
-from typing import Optional
+from typing import Optional,Literal
 
 from groq import AsyncGroq
 
@@ -31,31 +31,43 @@ logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 2
 
+ChangeType = Literal["ADDED", "REMOVED", "STRENGTHENED", "WEAKENED", "UNCHANGED"]
 
 # ─── Phase 1: Deterministic matching + classification ─────────────────────────
 
 
 def _find_interaction(
-    extraction: ExtractionResult, target_drug: str
+    extraction: ExtractionResult,
+    target_drug: str,
+    section: Optional[str] = None,         
 ) -> Optional[InteractionRecord]:
     """
     Find the interaction record for a specific target drug within one
     ExtractionResult. Case-insensitive match on target_drug field.
-
-    Returns None if no interaction with that drug was found in this version
-    (this is a valid, expected outcome — not an error).
+    
+    Args:
+        section: If provided, restricts match to that FDA label section only.
+                 If None, returns the highest-severity match across all sections.
+    
+    Returns None if no interaction with that drug was found in this version.
     """
     target_lower = target_drug.lower().strip()
-    for interaction in extraction.interactions:
-        if interaction.target_drug.lower().strip() == target_lower:
-            return interaction
-    return None
-
+    matches = [
+        interaction for interaction in extraction.interactions
+        if interaction.target_drug.lower().strip() == target_lower
+        and (section is None or interaction.section == section)
+    ]
+    
+    if not matches:
+        return None
+    
+    # If multiple sections mention the same drug, return the most severe
+    return max(matches, key=lambda r: r.severity_score)
 
 def _classify_change(
     past_match: Optional[InteractionRecord],
     present_match: Optional[InteractionRecord],
-) -> tuple[str, int]:
+) -> tuple[ChangeType, int]:
     """
     Pure deterministic classification — no LLM involved.
 
@@ -79,6 +91,9 @@ def _classify_change(
 
     if past_match is not None and present_match is None:
         return "REMOVED", -past_match.severity_score
+    
+    assert past_match is not None
+    assert present_match is not None
 
     # Both exist — compare severity scores
     delta = present_match.severity_score - past_match.severity_score
@@ -98,6 +113,7 @@ def _build_base_diff(
     present: ExtractionResult,
     past_match: Optional[InteractionRecord],
     present_match: Optional[InteractionRecord],
+    data_unavailable: bool = False,          
 ) -> DiffResult:
     """
     Assembles the DiffResult from Phase 1 outputs only.
@@ -107,12 +123,12 @@ def _build_base_diff(
     change_type, severity_delta = _classify_change(past_match, present_match)
 
     is_significant = (
-        abs(severity_delta) >= 2 
+        abs(severity_delta) >= 2
         or change_type in ["ADDED", "REMOVED"]
-    )
-    
+    ) and not data_unavailable              # ← never flag as significant if data missing
+
     source_drug = past.source_drug or present.source_drug
-    
+
     return DiffResult(
         drug_pair=f"{source_drug} + {target_drug}",
         change_type=change_type,
@@ -126,6 +142,7 @@ def _build_base_diff(
         is_clinically_significant=is_significant,
         past_spl_id=past.spl_id,
         present_spl_id=present.spl_id,
+        data_unavailable=data_unavailable,   # ← NEW
     )
 
 
@@ -230,30 +247,66 @@ async def _generate_clinical_reasoning(
 
 
 async def compute_temporal_diff(
-    past: ExtractionResult,
+    past: Optional[ExtractionResult],        # ← NOW Optional
     present: ExtractionResult,
     target_drug: str,
     groq_client: AsyncGroq,
+    prescription_date: Optional[str] = None, # ← NEW: for logging/tracing
 ) -> tuple[DiffResult, dict]:
     """
     Main entry point for the Temporal Diff Agent.
 
     Args:
-        past:         ExtractionResult from the label active at prescription_date
-        present:      ExtractionResult from the latest label version
-        target_drug:  The specific interacting drug to diff (e.g. "Azithromycin")
-        groq_client:  Shared AsyncGroq client (injected, never created internally)
+        past:              ExtractionResult from the label active at prescription_date.
+                           Pass None if label history predates the prescription date —
+                           data_unavailable will be set on the returned DiffResult.
+        present:           ExtractionResult from the latest label version.
+        target_drug:       The specific interacting drug to diff (e.g. "Azithromycin").
+        groq_client:       Shared AsyncGroq client (injected, never created internally).
+        prescription_date: Optional ISO date string for logging/tracing only.
 
     Returns:
         (DiffResult, reasoning_dict)
         DiffResult       — the verified, deterministic diff (ground truth)
-        reasoning_dict    — {clinical_reasoning, key_concern, confidence} from Phase 2
+        reasoning_dict   — {clinical_reasoning, key_concern, confidence} from Phase 2
 
     The two are returned separately so that Agent 5 (Patient Impact) can use
     DiffResult fields directly for any rule-based logic, while also having
     access to the LLM's clinical narrative for richer synthesis.
     """
-    past_match = _find_interaction(past, target_drug)
+    # ── Edge case: label history predates prescription_date ──────────────────
+    data_unavailable = past is None
+
+    if data_unavailable:
+        logger.warning(
+            f"No historical label found for '{target_drug}' "
+            f"at prescription_date={prescription_date}. "
+            f"Emitting data_unavailable=True — skipping Phase 1 match."
+        )
+        # Build a minimal DiffResult that signals the gap cleanly
+        diff = DiffResult(
+            drug_pair=f"{present.source_drug} + {target_drug}",
+            change_type="UNCHANGED",          # safest neutral default
+            past_version_date="UNAVAILABLE",
+            present_version_date=present.version_date,
+            is_clinically_significant=False,
+            past_spl_id=None,
+            present_spl_id=present.spl_id,
+            data_unavailable=True,            # ← the real signal
+        )
+        reasoning = {
+            "clinical_reasoning": (
+                f"Historical FDA label for {present.source_drug} + {target_drug} "
+                f"predates available version history. Temporal comparison cannot "
+                f"be performed. Manual review of current label is advised."
+            ),
+            "key_concern": "HISTORICAL_DATA_UNAVAILABLE",
+            "confidence": "low",
+        }
+        return diff, reasoning
+
+    # ── Normal path ──────────────────────────────────────────────────────────
+    past_match    = _find_interaction(past, target_drug)
     present_match = _find_interaction(present, target_drug)
 
     diff = _build_base_diff(
@@ -263,6 +316,7 @@ async def compute_temporal_diff(
         present=present,
         past_match=past_match,
         present_match=present_match,
+        data_unavailable=False,
     )
 
     logger.info(
@@ -275,6 +329,7 @@ async def compute_temporal_diff(
     logger.info(f"Phase 2 complete: confidence={reasoning.get('confidence')}")
 
     return diff, reasoning
+
 
 
 # ─── CLI helper for testing ───────────────────────────────────────────────────

@@ -8,8 +8,8 @@ from typing import Optional
 import httpx
 import lxml.etree as etree
 
-from config import DAILYMED_BASE_URL, LOINC_SECTIONS
-from schemas.fda_schema import FDALabelVersion, LabelSections, SPLVersion
+from src.config import DAILYMED_BASE_URL, LOINC_SECTIONS
+from src.schemas.fda_schema import FDALabelVersion, LabelSections, SPLVersion
 
 logger = logging.getLogger(__name__)
 

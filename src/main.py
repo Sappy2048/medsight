@@ -1,7 +1,7 @@
 import httpx
 import asyncio
 import logging
-from services.fda_client import get_past_and_present_labels
+from src.services.fda_client import get_past_and_present_labels
 from logging import getLogger
 
 logger = getLogger(__name__)

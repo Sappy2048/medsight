@@ -3,7 +3,7 @@ from datetime import datetime
 import lxml.etree as etree
 
 # Import the functions from your main module (assuming it's named fda_client.py)
-from services.fda_client import (
+from src.services.fda_client import (
     _select_canonical_set_id,
     _parse_dailymed_date,
     _extract_section_text,
