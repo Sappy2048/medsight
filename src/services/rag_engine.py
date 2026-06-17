@@ -3,6 +3,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Optional
+from xmlrpc import client
 
 from qdrant_client import QdrantClient, models
 import re
@@ -82,8 +83,8 @@ def ingest_guidelines():
     
     # Put this right below client.add(...)
     try:
-        client.create_payload_index(collection_name=QDRANT_COLLECTION, field_name="drug", field_schema="keyword")
-        client.create_payload_index(collection_name=QDRANT_COLLECTION, field_name="category", field_schema="keyword")
+        client.create_payload_index(collection_name=QDRANT_COLLECTION, field_name="drug",     field_schema=models.PayloadSchemaType.KEYWORD)
+        client.create_payload_index(collection_name=QDRANT_COLLECTION, field_name="category", field_schema=models.PayloadSchemaType.KEYWORD)
         print("✅ Rebuilt payload indexes!")
     except Exception as e:
         print(f"Index creation note: {e}")
@@ -96,7 +97,7 @@ def retrieve_context(
     drug_name: str,
     query: str,
     limit: int = 3,
-) -> list[str]:
+) -> list[dict]:
     """
     Retrieve relevant ICMR chunks for a drug + query.
     Filters by drug name, ranks by cosine similarity.
