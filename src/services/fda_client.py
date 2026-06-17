@@ -50,57 +50,59 @@ def _parse_dailymed_date(date_str: str) -> datetime:
     return datetime(year, month, day)
 
 
-def _extract_section_text(xml_tree: etree._Element, loinc_code: str) -> Optional[str]:
+def _extract_text_recursive(element: etree._Element, ns: dict) -> list[str]:
     """
-    Extract all paragraph text from a DailyMed SPL XML section identified by LOINC code.
-    Returns all paragraph text joined as a single string, or None if section absent.
+    Recursively extracts text from an hl7:section and all its nested sub-sections.
+    Preserves lists and tables while flattening them into the result list.
     """
-    ns = {"hl7": SPL_XML_NAMESPACE}
-
-    # Find the <section> whose <code> attribute matches the LOINC code
-    sections = xml_tree.xpath(
-        f".//hl7:section[hl7:code[@code='{loinc_code}']]",
-        namespaces=ns,
-    )
-
-    if not sections:
-        return None
-    
     chunks = []
-    for section in sections:
-        text_node = section.find("hl7:text", namespaces=ns)
-        if text_node is None:
-            continue
-
+    
+    # 1. Extract text from the current section's hl7:text node
+    text_node = element.find("hl7:text", namespaces=ns)
+    if text_node is not None:
         for child in text_node:
-            # Strip namespace for tag comparison
             tag = etree.QName(child.tag).localname
-
             if tag == "paragraph":
                 text = "".join(child.itertext()).strip()
                 if text:
                     chunks.append(text)
-
             elif tag == "list":
                 items = child.findall(".//hl7:item", namespaces=ns)
                 for item in items:
                     text = "".join(item.itertext()).strip()
                     if text:
                         chunks.append(f"• {text}")
-
             elif tag == "table":
-                # Flatten table rows — preserve cell relationships on one line
                 for row in child.findall(".//hl7:tr", namespaces=ns):
-                    cells = row.findall(".//*")
-                    cell_texts = []
-                    for cell in row:
-                        cell_text = "".join(cell.itertext()).strip()
-                        if cell_text:
-                            cell_texts.append(cell_text)
+                    cell_texts = ["".join(cell.itertext()).strip() for cell in row if "".join(cell.itertext()).strip()]
                     if cell_texts:
                         chunks.append(" | ".join(cell_texts))
 
-    return "\n\n".join(chunks) if chunks else None
+    # 2. Recurse into nested sections via hl7:component/hl7:section
+    for component in element.findall("hl7:component", namespaces=ns):
+        sub_section = component.find("hl7:section", namespaces=ns)
+        if sub_section is not None:
+            chunks.extend(_extract_text_recursive(sub_section, ns))
+            
+    return chunks
+
+
+def _extract_section_text(xml_tree: etree._Element, loinc_code: str) -> Optional[str]:
+    """
+    Extract all text from an FDA SPL XML section identified by LOINC code, 
+    including all nested sub-sections.
+    """
+    ns = {"hl7": SPL_XML_NAMESPACE}
+    sections = xml_tree.xpath(f".//hl7:section[hl7:code[@code='{loinc_code}']]", namespaces=ns)
+
+    if not sections:
+        return None
+    
+    all_chunks = []
+    for section in sections:
+        all_chunks.extend(_extract_text_recursive(section, ns))
+
+    return "\n\n".join(all_chunks) if all_chunks else None
 
 
 def _parse_label_xml(

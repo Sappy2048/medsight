@@ -17,7 +17,7 @@ class InteractionRecord(BaseModel):
     section: Literal[
         "boxed_warning",
         "contraindications",
-        "warnings_and_precautions",
+        "warnings",
         "drug_interactions"
     ] = "drug_interactions"
 

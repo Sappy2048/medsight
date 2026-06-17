@@ -6,7 +6,7 @@ Responsibility:
     drug interaction records from the 4 interaction-relevant sections:
         - boxed_warning
         - contraindications
-        - warnings_and_precautions
+        - warnings
         - drug_interactions
 
     Single-phase LLM extraction: the model extracts drug mentions,
@@ -41,13 +41,13 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES = 2
 
 _INTERACTION_SECTIONS: list[
-    Literal["boxed_warning", "contraindications", "warnings_and_precautions", "drug_interactions"]
-] = ["boxed_warning", "contraindications", "warnings_and_precautions", "drug_interactions"]
+    Literal["boxed_warning", "contraindications", "warnings", "drug_interactions"]
+] = ["boxed_warning", "contraindications", "warnings", "drug_interactions"]
 
 InteractionSection = Literal[
     "boxed_warning",
     "contraindications",
-    "warnings_and_precautions",
+    "warnings",
     "drug_interactions",
 ]
 

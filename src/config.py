@@ -16,7 +16,7 @@ SEVERITY_ONTOLOGY = {
 
 MVP_DRUGS = ["Warfarin", "Azithromycin", "Metformin", "Ibuprofen", "Lisinopril"]
 
-GROQ_MODEL        = "llama-3.1-8b-instant"
+GROQ_MODEL        = "llama-3.3-70b-versatile"
 
 QDRANT_URL        = os.getenv("QDRANT_URL")
 QDRANT_API_KEY    = os.getenv("QDRANT_API_KEY")
