@@ -38,13 +38,53 @@ ChangeType = Literal["ADDED", "REMOVED", "STRENGTHENED", "WEAKENED", "UNCHANGED"
 # Minimum character length for substring matching — prevents "mycin" matching
 # "azithromycin". Both strings must be at least this long before substring
 # logic is allowed to fire.
-_MIN_SUBSTRING_MATCH_LEN = 6
+MIN_SUBSTRING_MATCH_LEN = 6
 
 # Fuzzy match threshold — token_sort_ratio is used (not WRatio) because:
 #   - It handles salt suffixes: "azithromycin" vs "azithromycin anhydrous" → 100
 #   - It is NOT fooled by short shared substrings between different drugs
 #   - WRatio at 85 fires on "metformin" vs "metamizole" (genuinely different)
-_FUZZY_MATCH_THRESHOLD = 88
+FUZZY_MATCH_THRESHOLD = 88
+
+
+def is_drug_match(query: str, target: str) -> bool:
+    """
+    Core three-tier matching logic reused across agents.
+    
+    Tier 1: Exact match (case-insensitive)
+    Tier 2: Substring match (bidirectional, length-guarded)
+    Tier 3: Fuzzy match (token_sort_ratio >= FUZZY_MATCH_THRESHOLD)
+    """
+    query_lower = query.lower().strip()
+    target_lower = target.lower().strip()
+
+    # Tier 1: exact match
+    if query_lower == target_lower:
+        return True
+
+    # Tier 2: substring match — bidirectional with length guard
+    len_q = len(query_lower)
+    len_t = len(target_lower)
+
+    if (
+        min(len_q, len_t) >= MIN_SUBSTRING_MATCH_LEN
+        and (query_lower in target_lower or target_lower in query_lower)
+    ):
+        logger.warning(
+            f"Substring match fired: query='{query}' → target='{target}'"
+        )
+        return True
+
+    # Tier 3: fuzzy match — token_sort_ratio for salt/form suffix tolerance
+    score = fuzz.token_sort_ratio(query_lower, target_lower)
+    if score >= FUZZY_MATCH_THRESHOLD:
+        logger.warning(
+            f"Fuzzy match fired: query='{query}' → target='{target}' "
+            f"(token_sort_ratio={score})"
+        )
+        return True
+
+    return False
 
 
 def _find_interaction(
@@ -54,69 +94,19 @@ def _find_interaction(
 ) -> Optional[InteractionRecord]:
     """
     Find the best-matching InteractionRecord for target_drug within one
-    ExtractionResult. Three-tier matching strategy:
-
-    Tier 1 — Exact match (case-insensitive):
-        "azithromycin" == "azithromycin"
-        Fast, zero false positive risk. Always tried first.
-
-    Tier 2 — Substring match (bidirectional, length-guarded):
-        "azithromycin" in "azithromycin anhydrous"  → fires (query in extracted)
-        "azithromycin anhydrous" in "azithromycin"  → fires (extracted in query)
-        Both strings must be >= _MIN_SUBSTRING_MATCH_LEN chars to prevent
-        short token collisions (e.g. "mycin" matching "azithromycin").
-
-    Tier 3 — Fuzzy match (token_sort_ratio >= _FUZZY_MATCH_THRESHOLD):
-        Handles typos and ordering variations in multi-word drug names.
-        Uses token_sort_ratio NOT WRatio — safer for short clinical strings
-        where WRatio's composite scoring risks cross-drug false positives.
-
-    All Tier 2 and Tier 3 hits are logged at WARNING — fuzzy matches in a
-    clinical system must always be auditable.
+    ExtractionResult using the three-tier matching strategy.
 
     If multiple sections mention the same drug, the highest-severity record
     is returned (most conservative clinical posture).
     """
-    target_lower = target_drug.lower().strip()
     matches: list[InteractionRecord] = []
 
     for interaction in extraction.interactions:
-        extracted_name = interaction.target_drug.lower().strip()
-
         # Gate on section filter first — avoids unnecessary string ops
         if section is not None and interaction.section != section:
             continue
 
-        # Tier 1: exact match
-        if extracted_name == target_lower:
-            matches.append(interaction)
-            continue
-
-        # Tier 2: substring match — bidirectional with length guard
-        len_target    = len(target_lower)
-        len_extracted = len(extracted_name)
-
-        if (
-            min(len_target, len_extracted) >= _MIN_SUBSTRING_MATCH_LEN
-            and (target_lower in extracted_name or extracted_name in target_lower)
-        ):
-            logger.warning(
-                f"Substring match fired: query='{target_drug}' → "
-                f"extracted='{interaction.target_drug}' "
-                f"(section={interaction.section}) — verify correctness"
-            )
-            matches.append(interaction)
-            continue
-
-        # Tier 3: fuzzy match — token_sort_ratio for salt/form suffix tolerance
-        score = fuzz.token_sort_ratio(target_lower, extracted_name)
-        if score >= _FUZZY_MATCH_THRESHOLD:
-            logger.warning(
-                f"Fuzzy match fired: query='{target_drug}' → "
-                f"extracted='{interaction.target_drug}' "
-                f"(token_sort_ratio={score}, section={interaction.section}) "
-                f"— verify correctness"
-            )
+        if is_drug_match(target_drug, interaction.target_drug):
             matches.append(interaction)
 
     if not matches:

@@ -97,13 +97,25 @@ def retrieve_context(
     drug_name: str,
     query: str,
     limit: int = 3,
+    client: Optional[QdrantClient] = None,
 ) -> list[dict]:
     """
     Retrieve relevant ICMR chunks for a drug + query.
     Filters by drug name, ranks by cosine similarity.
     Falls back to unfiltered search if no drug-specific chunks found.
     """
-    client = _get_client()
+    if client is None:
+        client = _get_client()
+    
+    # Ensure FastEmbed model is set if not already
+    try:
+        # Check if model is initialized (internal check for QdrantClient)
+        # Use getattr to avoid Pylance error on private attribute access
+        model_name = getattr(client, "_model_name", None)
+        if model_name is None:
+            client.set_model(FASTEMBED_MODEL)
+    except Exception:
+        pass
 
     drug_filter = models.Filter(
         must=[
