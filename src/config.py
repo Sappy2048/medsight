@@ -11,6 +11,7 @@ SEVERITY_ONTOLOGY = {
     "use caution":     3,
     "monitor closely": 2,
     "monitor":         1,
+    "no clinically significant interaction": 0,
 }
 
 MVP_DRUGS = ["Warfarin", "Azithromycin", "Metformin", "Ibuprofen", "Lisinopril"]
