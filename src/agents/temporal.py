@@ -1,0 +1,335 @@
+"""
+temporal.py — Temporal Diff Agent (Layer 2, the core differentiator)
+
+Two-phase design:
+    Phase 1 (deterministic): match interactions, classify change, compute delta
+    Phase 2 (LLM reasoning):  generate clinical reasoning for Agent 5 (Patient Impact)
+
+Phase 1 NEVER hallucinates — it's pure Python comparison logic.
+Phase 2 reasons over Phase 1's verified output — it cannot invent facts,
+only interpret the facts it's given.
+
+Exposed function:
+    async def compute_temporal_diff(
+        past: ExtractionResult,
+        present: ExtractionResult,
+        target_drug: str,
+        groq_client: AsyncGroq,
+    ) -> DiffResult
+"""
+
+import json
+import logging
+from typing import Optional
+
+from groq import AsyncGroq
+
+from src.config import GROQ_MODEL, SEVERITY_ONTOLOGY
+from src.schemas.diff_schema import ExtractionResult, InteractionRecord, DiffResult
+
+logger = logging.getLogger(__name__)
+
+_MAX_RETRIES = 2
+
+
+# ─── Phase 1: Deterministic matching + classification ─────────────────────────
+
+
+def _find_interaction(
+    extraction: ExtractionResult, target_drug: str
+) -> Optional[InteractionRecord]:
+    """
+    Find the interaction record for a specific target drug within one
+    ExtractionResult. Case-insensitive match on target_drug field.
+
+    Returns None if no interaction with that drug was found in this version
+    (this is a valid, expected outcome — not an error).
+    """
+    target_lower = target_drug.lower().strip()
+    for interaction in extraction.interactions:
+        if interaction.target_drug.lower().strip() == target_lower:
+            return interaction
+    return None
+
+
+def _classify_change(
+    past_match: Optional[InteractionRecord],
+    present_match: Optional[InteractionRecord],
+) -> tuple[str, int]:
+    """
+    Pure deterministic classification — no LLM involved.
+
+    Returns:
+        (change_type, severity_delta)
+
+    Logic:
+        past=None,    present=exists  → ADDED,        delta = present_score
+        past=exists,  present=None    → REMOVED,       delta = -past_score
+        both exist, present > past    → STRENGTHENED,  delta = present - past
+        both exist, present < past    → WEAKENED,       delta = present - past
+        both exist, present == past   → UNCHANGED,      delta = 0
+    """
+    if past_match is None and present_match is None:
+        # Neither version mentions this drug pair — should not reach this
+        # function in practice, but handle gracefully rather than crash.
+        return "UNCHANGED", 0
+
+    if past_match is None and present_match is not None:
+        return "ADDED", present_match.severity_score
+
+    if past_match is not None and present_match is None:
+        return "REMOVED", -past_match.severity_score
+
+    # Both exist — compare severity scores
+    delta = present_match.severity_score - past_match.severity_score
+
+    if delta > 0:
+        return "STRENGTHENED", delta
+    elif delta < 0:
+        return "WEAKENED", delta
+    else:
+        return "UNCHANGED", 0
+
+
+def _build_base_diff(
+    target_drug: str,
+    source_drug: str,
+    past: ExtractionResult,
+    present: ExtractionResult,
+    past_match: Optional[InteractionRecord],
+    present_match: Optional[InteractionRecord],
+) -> DiffResult:
+    """
+    Assembles the DiffResult from Phase 1 outputs only.
+    No LLM involved — every field here is either a direct copy from
+    ExtractionResult/InteractionRecord, or simple arithmetic.
+    """
+    change_type, severity_delta = _classify_change(past_match, present_match)
+
+    is_significant = (
+        abs(severity_delta) >= 2 
+        or change_type in ["ADDED", "REMOVED"]
+    )
+    
+    source_drug = past.source_drug or present.source_drug
+    
+    return DiffResult(
+        drug_pair=f"{source_drug} + {target_drug}",
+        change_type=change_type,
+        past_recommendation=past_match.recommendation_text if past_match else None,
+        present_recommendation=present_match.recommendation_text if present_match else None,
+        past_severity_score=past_match.severity_score if past_match else None,
+        present_severity_score=present_match.severity_score if present_match else None,
+        severity_delta=severity_delta,
+        past_version_date=past.version_date,
+        present_version_date=present.version_date,
+        is_clinically_significant=is_significant,
+        past_spl_id=past.spl_id,
+        present_spl_id=present.spl_id,
+    )
+
+
+# ─── Phase 2: LLM clinical reasoning ────────────────────────────────────────────
+
+_REASONING_SYSTEM_PROMPT = """\
+You are a clinical reasoning assistant embedded in a drug safety system.
+
+You will receive a verified, structured diff between two FDA label versions
+for a specific drug interaction. This diff has already been computed
+deterministically — every fact (severity scores, dates, change type) is
+ground truth. Your job is NOT to re-derive these facts. Your job is to
+explain their clinical significance in plain language for a downstream
+Patient Impact Agent.
+
+RULES (non-negotiable):
+1. NEVER invent a fact not present in the input JSON.
+2. NEVER change or contradict severity_score, change_type, or dates given.
+3. If past_recommendation or present_recommendation is null, say so plainly
+   — do not guess what it might have said.
+4. Your output must be a single clinical reasoning paragraph (3-5 sentences)
+   that explains: what changed, why it matters clinically, and what the
+   downstream agent should pay attention to.
+5. Be specific about the mechanism if evident from the recommendation text
+   (e.g. bleeding risk, QT prolongation, renal impairment) — but only if
+   that mechanism is explicitly mentioned in the input text. Do not infer
+   a mechanism that isn't stated.
+
+OUTPUT FORMAT (strict JSON, no markdown, no explanation outside the JSON):
+{
+  "clinical_reasoning": "<3-5 sentence paragraph>",
+  "key_concern": "<one short phrase capturing the single most important risk, or null if UNCHANGED>",
+  "confidence": "high" | "medium" | "low"
+}
+
+Set confidence to "low" if either recommendation text is null or very short.
+Set confidence to "high" only if both versions have clear, specific recommendation text.
+"""
+
+
+async def _generate_clinical_reasoning(
+    diff: DiffResult,
+    groq_client: AsyncGroq,
+) -> dict:
+    """
+    Phase 2: LLM reasons over the verified DiffResult to produce a clinical
+    explanation. The LLM is given the diff as context — it cannot alter the
+    underlying facts, only interpret them.
+
+    Returns dict with keys: clinical_reasoning, key_concern, confidence
+    Falls back to a templated reasoning string if LLM call fails after retries,
+    so the pipeline never breaks on this non-critical enrichment step.
+    """
+    diff_context = diff.model_dump_json(indent=2)
+
+    last_error: Optional[Exception] = None
+
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            response = await groq_client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": _REASONING_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Diff to reason about:\n{diff_context}"},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,  # low but not zero — allow natural phrasing
+                max_tokens=512,
+            )
+
+            content = response.choices[0].message.content
+            parsed = json.loads(content or "{}")
+
+            # Basic shape validation — don't trust LLM blindly even here
+            if "clinical_reasoning" not in parsed:
+                raise ValueError("Missing clinical_reasoning in LLM response")
+
+            return parsed
+
+        except (json.JSONDecodeError, ValueError, Exception) as e:
+            last_error = e
+            logger.warning(
+                f"Clinical reasoning attempt {attempt + 1}/{_MAX_RETRIES + 1} failed: {e}"
+            )
+
+    # Fallback — pipeline must not crash on enrichment failure
+    logger.error(f"Clinical reasoning failed after all retries: {last_error}")
+    return {
+        "clinical_reasoning": (
+            f"Interaction warning for {diff.drug_pair} changed from "
+            f"'{diff.past_recommendation or 'no prior record'}' to "
+            f"'{diff.present_recommendation or 'no current record'}' "
+            f"({diff.change_type}, severity delta {diff.severity_delta}). "
+            f"Automated reasoning unavailable — review raw diff directly."
+        ),
+        "key_concern": diff.change_type if diff.is_clinically_significant else None,
+        "confidence": "low",
+    }
+
+
+# ─── Public entry point ──────────────────────────────────────────────────────
+
+
+async def compute_temporal_diff(
+    past: ExtractionResult,
+    present: ExtractionResult,
+    target_drug: str,
+    groq_client: AsyncGroq,
+) -> tuple[DiffResult, dict]:
+    """
+    Main entry point for the Temporal Diff Agent.
+
+    Args:
+        past:         ExtractionResult from the label active at prescription_date
+        present:      ExtractionResult from the latest label version
+        target_drug:  The specific interacting drug to diff (e.g. "Azithromycin")
+        groq_client:  Shared AsyncGroq client (injected, never created internally)
+
+    Returns:
+        (DiffResult, reasoning_dict)
+        DiffResult       — the verified, deterministic diff (ground truth)
+        reasoning_dict    — {clinical_reasoning, key_concern, confidence} from Phase 2
+
+    The two are returned separately so that Agent 5 (Patient Impact) can use
+    DiffResult fields directly for any rule-based logic, while also having
+    access to the LLM's clinical narrative for richer synthesis.
+    """
+    past_match = _find_interaction(past, target_drug)
+    present_match = _find_interaction(present, target_drug)
+
+    diff = _build_base_diff(
+        target_drug=target_drug,
+        source_drug=past.source_drug,
+        past=past,
+        present=present,
+        past_match=past_match,
+        present_match=present_match,
+    )
+
+    logger.info(
+        f"Phase 1 complete: {diff.drug_pair} → {diff.change_type} "
+        f"(delta={diff.severity_delta}, significant={diff.is_clinically_significant})"
+    )
+
+    reasoning = await _generate_clinical_reasoning(diff, groq_client)
+
+    logger.info(f"Phase 2 complete: confidence={reasoning.get('confidence')}")
+
+    return diff, reasoning
+
+
+# ─── CLI helper for testing ───────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import asyncio
+    import os
+
+    async def _test():
+        logging.basicConfig(level=logging.INFO)
+
+        client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+
+        # Mock data for testing without waiting on extraction.py
+        past = ExtractionResult(
+            source_drug="Warfarin",
+            version_date="2019-03-15",
+            spl_id="mock-spl::v3",
+            interactions=[
+                InteractionRecord(
+                    source_drug="Warfarin",
+                    target_drug="Azithromycin",
+                    recommendation_text="Monitor INR levels closely",
+                    severity_text="monitor closely",
+                    severity_score=SEVERITY_ONTOLOGY["monitor closely"],
+                    version_date="2019-03-15",
+                    spl_id="mock-spl::v3",
+                )
+            ],
+        )
+
+        present = ExtractionResult(
+            source_drug="Warfarin",
+            version_date="2023-08-01",
+            spl_id="mock-spl::v7",
+            interactions=[
+                InteractionRecord(
+                    source_drug="Warfarin",
+                    target_drug="Azithromycin",
+                    recommendation_text="Avoid concomitant use due to risk of fatal bleeding",
+                    severity_text="avoid",
+                    severity_score=SEVERITY_ONTOLOGY["avoid"],
+                    version_date="2023-08-01",
+                    spl_id="mock-spl::v7",
+                )
+            ],
+        )
+
+        diff, reasoning = await compute_temporal_diff(
+            past, present, target_drug="Azithromycin", groq_client=client
+        )
+
+        print("\n--- DiffResult ---")
+        print(diff.model_dump_json(indent=2))
+        print("\n--- Clinical Reasoning ---")
+        print(json.dumps(reasoning, indent=2))
+
+    asyncio.run(_test())
