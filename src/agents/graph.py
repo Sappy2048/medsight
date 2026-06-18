@@ -7,6 +7,7 @@ Role:
 """
 
 import logging
+from datetime import date
 from typing import Optional, List, Dict, Any, TypedDict, Literal, Tuple
 import asyncio
 
@@ -69,6 +70,8 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
 
     async def resolver_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: resolver")
+        if state["prescription"] is None:
+            raise ValueError("Prescription is None — preflight validation failed or returned empty.")
         import httpx
         async with httpx.AsyncClient(timeout=30.0) as http_client:
             resolved_drugs = await resolve_prescription(state["prescription"], http_client)
@@ -76,11 +79,19 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
 
     async def label_fetcher_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: label_fetcher")
+        if state["prescription"] is None:
+            raise ValueError("Prescription is None — cannot fetch labels.")
         import httpx
         from src.services.fda_client import get_past_and_present_labels
         
         label_history = {}
-        prescription_date = state["prescription"].prescription_date or "2024-01-01"
+        raw_date = state["prescription"].prescription_date
+        if raw_date is None:
+            prescription_date = "2024-01-01"
+        elif isinstance(raw_date, date):
+            prescription_date = raw_date.isoformat()
+        else:
+            prescription_date = str(raw_date)
         
         async with httpx.AsyncClient(timeout=30.0) as http_client:
             for drug in state["resolved_drugs"]:
@@ -99,9 +110,18 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
     async def temporal_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: temporal (includes reasoning)")
         
+        if state["prescription"] is None:
+            raise ValueError("Prescription is None — cannot compute temporal diff.")
+        
         diffs = []
         reasoning_list = []
-        prescription_date = state["prescription"].prescription_date
+        raw_date = state["prescription"].prescription_date
+        if raw_date is None:
+            prescription_date_str = None
+        elif isinstance(raw_date, date):
+            prescription_date_str = raw_date.isoformat()
+        else:
+            prescription_date_str = str(raw_date)
         
         # Flatten all generics for cross-pair checking
         all_generics = []
@@ -118,7 +138,7 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
             other_generics = [g for g in all_generics if g not in source_generic]
             for target in other_generics:
                 diff, reasoning = await compute_temporal_diff(
-                    past_ext, present_ext, target, groq_client, prescription_date
+                    past_ext, present_ext, target, groq_client, prescription_date_str
                 )
                 diffs.append(diff)
                 reasoning_list.append(reasoning)
@@ -128,13 +148,24 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
     async def impact_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: impact")
         
+        if state["prescription"] is None:
+            raise ValueError("Prescription is None — cannot analyze impact.")
+        
         # Zip diffs and reasoning back together
         diff_tuples = list(zip(state["diffs"], state["reasoning"]))
+        
+        raw_date = state["prescription"].prescription_date
+        if raw_date is None:
+            prescription_date_str = "2024-01-01"
+        elif isinstance(raw_date, date):
+            prescription_date_str = raw_date.isoformat()
+        else:
+            prescription_date_str = str(raw_date)
         
         impact_report = await analyze_patient_impact(
             diffs=diff_tuples,
             resolved_drugs=state["resolved_drugs"],
-            prescription_date=state["prescription"].prescription_date or "2024-01-01",
+            prescription_date=prescription_date_str,
             groq_client=groq_client,
             qdrant_client=qdrant_client
         )
@@ -142,6 +173,8 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
 
     async def synthesizer_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: synthesizer")
+        if state["impact_report"] is None:
+            raise ValueError("Impact report is None — cannot synthesize final report.")
         final_report = await synthesize_final_report(
             report=state["impact_report"],
             diff_results=state["diffs"],
@@ -151,6 +184,8 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
 
     async def copilot_overseer_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: copilot_overseer")
+        if state["final_report"] is None:
+            raise ValueError("Final report is None — cannot oversee report.")
         should_rerun, explanation = await oversee_report(state["final_report"], groq_client)
         
         # Logic for re-run is handled in the conditional edge, 
@@ -208,6 +243,8 @@ def build_medsight_graph(groq_client: AsyncGroq, qdrant_client: QdrantClient, db
     
     # Conditional edge from overseer
     async def should_continue(state: MedSightState):
+        if state["final_report"] is None:
+            return "persist"
         should_rerun, _ = await oversee_report(state["final_report"], groq_client)
         if should_rerun and state["loop_count"] < 2:
             return "resolver"

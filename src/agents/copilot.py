@@ -13,8 +13,9 @@ Modes:
 import json
 import logging
 from datetime import datetime
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, List, Dict, Any, Optional, cast, Iterable
 from groq import AsyncGroq
+from groq.types.chat import ChatCompletionMessageParam
 
 from src.config import GROQ_MODEL
 from src.schemas.prescription_schema import ParsedPrescription, ParsedDrug
@@ -119,8 +120,10 @@ async def answer_question(
         )
         
         # Build message history: [system] + history + [user]
-        messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(history)
+        messages: List[ChatCompletionMessageParam] = [
+            {"role": "system", "content": system_prompt}
+        ]
+        messages.extend(cast(List[ChatCompletionMessageParam], history))
         messages.append({"role": "user", "content": question})
         
         response = await groq_client.chat.completions.create(
