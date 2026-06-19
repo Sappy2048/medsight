@@ -329,4 +329,4 @@ async def extract_interactions(
         spl_id=label.spl_id,
         interactions=all_records,
     )
- )
+
