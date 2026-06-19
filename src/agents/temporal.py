@@ -388,13 +388,15 @@ async def compute_temporal_diff(
 if __name__ == "__main__":
     import asyncio
     import os
+    from src.config import TOGETHER_BASE_URL
 
     async def _test():
         logging.basicConfig(level=logging.INFO)
 
+        # Updated to leverage Together AI Serverless Client Infrastructure
         client = AsyncOpenAI(
-            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
-            api_key=os.getenv("OLLAMA_API_KEY", "ollama")
+            base_url=TOGETHER_BASE_URL,
+            api_key=os.getenv("TOGETHER_API_KEY")
         )
 
         # Mock data for testing without waiting on extraction.py
@@ -441,4 +443,4 @@ if __name__ == "__main__":
         print("\n--- Clinical Reasoning ---")
         print(json.dumps(reasoning, indent=2))
 
-    asyncio.run(_test())))
+    asyncio.run(_test())

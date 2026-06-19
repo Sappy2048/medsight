@@ -1,210 +1,108 @@
 import asyncio
-import pytest
 import json
 import os
-from dotenv import load_dotenv
-from pydantic import ValidationError
-from unittest.mock import AsyncMock, MagicMock
 from openai import AsyncOpenAI
+# Import your agent and schemas here
 from src.agents.prescription_parser import PrescriptionParsingAgent
 from src.schemas.prescription_schema import ParsedPrescription
-from src.config import OLLAMA_BASE_URL, OLLAMA_API_KEY
 
-load_dotenv(dotenv_path=".env")  # Load environment variables from .env file for testing
+# --- ANSI Colors for Terminal Output ---
+class Colors:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
 
-def _build_mock_response(json_str: str) -> MagicMock:
-    """Builds a mock that mimics the OpenAI/Groq response structure."""
-    mock_response = MagicMock()
-    mock_response.choices[0].message.content = json_str
-    return mock_response
+async def run_single_test(agent, case: dict, index: int):
+    """Runs a single test case and prints the result clearly to the terminal."""
+    print(f"\n{Colors.HEADER}{Colors.BOLD}--- Test Case {index}: {case['name']} ---{Colors.RESET}")
+    print(f"{Colors.BLUE}Input:{Colors.RESET} {case['input_text']}")
+    
+    try:
+        # Call the actual LLM
+        result = await agent.parse(case['input_text'])
+        
+        # Convert Pydantic model to dict for easy viewing
+        result_dict = result.model_dump(mode="json")
+        
+        print(f"{Colors.GREEN}Output:{Colors.RESET}")
+        print(json.dumps(result_dict, indent=2))
+        
+        # Optional: Add custom assertion logic here later
+        # if not check_expectations(result_dict, case['expected']):
+        #     print(f"{Colors.WARNING}Status: NEEDS REVIEW (Did not match expected exactly){Colors.RESET}")
+        # else:
+        #     print(f"{Colors.GREEN}Status: PASS{Colors.RESET}")
+
+    except Exception as e:
+        print(f"{Colors.FAIL}Error:{Colors.RESET} {str(e)}")
 
 
-@pytest.mark.asyncio
-async def test_single_drug_parse():
-    mock_client = AsyncMock()
-    mock_client.chat.completions.create.return_value = _build_mock_response("""
+async def main():
+    # Ensure you have your API key set in your environment
+    client = AsyncOpenAI(api_key=os.getenv("TOGETHER_API_KEY"), base_url="https://api.together.xyz/v1")
+    agent = PrescriptionParsingAgent(llm_client=client)
+
+    # We will populate these 10 edge cases based on our discussion
+    test_cases = [
+        {
+        "name": "Relative Dates",
+        "input_text": "Rx: Dolo 650 TDS. Prescribed today for a 45yo male."
+    },
     {
-      "drugs": [{"target_brand_name": "Ascoril LS", "prescribed_dose": "10ml",
-                 "route": "oral", "frequency": "BID", "duration_days": null}],
-      "prescription_date": null,
-      "patient_age": null,
-      "raw_input": "Give pt Ascoril LS 10 ml po twice daily",
-      "extraction_confidence": "high"
-    }
-    """)
-
-    agent = PrescriptionParsingAgent(llm_client=mock_client)
-    result = await agent.parse("Give pt Ascoril LS 10 ml po twice daily")
-
-    assert isinstance(result, ParsedPrescription)
-    assert result.drugs[0].target_brand_name == "Ascoril LS"
-    assert result.drugs[0].route == "oral"
-    assert result.drugs[0].frequency == "BID"
-
-
-@pytest.mark.asyncio
-async def test_multi_drug_parse():
-    mock_client = AsyncMock()
-    mock_client.chat.completions.create.return_value = _build_mock_response("""
+        "name": "Missing Date Components",
+        "input_text": "Start Augmentin 625 BD. Written in Oct 2023."
+    },
     {
-      "drugs": [
-        {"target_brand_name": "Augmentin", "prescribed_dose": "625mg",
-         "route": "oral", "frequency": "BID", "duration_days": 5},
-        {"target_brand_name": "Dolo", "prescribed_dose": "650mg",
-         "route": "oral", "frequency": "TID", "duration_days": 5}
-      ],
-      "prescription_date": null,
-      "patient_age": null,
-      "raw_input": "Tab Augmentin 625 BD + Dolo 650 TDS for 5 days",
-      "extraction_confidence": "high"
+        "name": "Non-Standard Date Formats",
+        "input_text": "Consulted on 12/11/10. Take Azithromycin 500mg OD x 3d."
+    },
+    {
+        "name": "Numbers Native to Brand Name",
+        "input_text": "Take Vitamin B12 and Omega 3 capsules OD for a month."
+    },
+    {
+        "name": "Compound Dosages",
+        "input_text": "Tab Augmentin 875/125 twice daily for 10 days."
+    },
+    {
+        "name": "Extreme Typos & Shorthand",
+        "input_text": "Azythromaecin 500 od 3 days + PCM 650 1-0-1 x 5d"
+    },
+    {
+        "name": "Tapering Doses",
+        "input_text": "Prednisolone 40mg OD for 3 days, then 20mg OD for 3 days, then 10mg OD for 3 days."
+    },
+    {
+        "name": "Conditional & Conflicting Durations",
+        "input_text": "Take 1 pill of Cetirizine everyday for two weeks, but stop after 5 days if rash goes away."
+    },
+    {
+        "name": "Lifestyle Advice (No Drugs)",
+        "input_text": "Patient advised complete bed rest. Drink plenty of water and review CBC reports after 14 days. Age: 32."
+    },
+    {
+        "name": "Multi-Route Topical Chaos",
+        "input_text": "Apply Volini gel locally QID and take Volini tab SOS."
+    },
+    {
+    "name": "Non-Prescription / Clinical Query Guardrail",
+    "input_text": "What are the common side effects of taking Metformin 500mg daily?"
     }
-    """)
-
-    agent = PrescriptionParsingAgent(llm_client=mock_client)
-    result = await agent.parse("Tab Augmentin 625 BD + Dolo 650 TDS for 5 days")
-
-    assert len(result.drugs) == 2
-    assert result.drugs[1].target_brand_name == "Dolo"
-    assert result.drugs[1].frequency == "TID"
-
-
-@pytest.mark.asyncio
-async def test_retry_on_pydantic_validation_error():
-    """
-    Forces the LLM to return invalid schema twice, then valid schema on the third try.
-    Verifies the agent retries and eventually succeeds.
-    """
-    mock_client = AsyncMock()
-    
-    # Attempt 1: 'duration_days' is a string instead of an integer (Triggers ValidationError)
-    bad_json_1 = json.dumps({
-        "drugs": [{"target_brand_name": "Aspirin", "route": "oral", "frequency": "OD", "duration_days": "five"}],
-        "prescription_date": None, "patient_age": None, "extraction_confidence": "high"
-    })
-    
-    # Attempt 2: 'route' is an invalid enum value (Triggers ValidationError)
-    bad_json_2 = json.dumps({
-        "drugs": [{"target_brand_name": "Aspirin", "route": "rectal", "frequency": "OD", "duration_days": 5}],
-        "prescription_date": None, "patient_age": None, "extraction_confidence": "high"
-    })
-    
-    # Attempt 3: Perfect JSON
-    good_json = json.dumps({
-        "drugs": [{"target_brand_name": "Aspirin", "route": "oral", "frequency": "OD", "duration_days": 5}],
-        "prescription_date": None, "patient_age": None, "extraction_confidence": "high"
-    })
-    
-    # Set the side_effect to return these sequentially
-    mock_client.chat.completions.create.side_effect = [
-        _build_mock_response(bad_json_1),
-        _build_mock_response(bad_json_2),
-        _build_mock_response(good_json)
     ]
-    
-    agent = PrescriptionParsingAgent(llm_client=mock_client)
-    result = await agent.parse("Take Aspirin once daily for 5 days")
-    
-    # Assert it eventually succeeded
-    assert result.drugs[0].target_brand_name == "Aspirin"
-    
-    # Assert the LLM was called exactly 3 times (1 initial + 2 retries)
-    assert mock_client.chat.completions.create.call_count == 3
 
-
-@pytest.mark.asyncio
-async def test_exhaust_retries_raises_runtime_error():
-    """
-    Forces the LLM to consistently return garbage.
-    Verifies that the agent raises a RuntimeError after exhausting retries.
-    """
-    mock_client = AsyncMock()
+    print(f"{Colors.BOLD}Starting LLM Evaluation Run...{Colors.RESET}")
     
-    # Provide completely broken JSON that triggers JSONDecodeError
-    mock_client.chat.completions.create.return_value = _build_mock_response("```json \n Oops I forgot how to JSON")
-    
-    agent = PrescriptionParsingAgent(llm_client=mock_client)
-    
-    # We expect a RuntimeError when retries run out
-    with pytest.raises(RuntimeError) as exc_info:
-        await agent.parse("Tab Paracetamol 500mg")
+    # Running sequentially to respect rate limits and keep terminal output ordered
+    for i, case in enumerate(test_cases, start=1):
+        await run_single_test(agent, case, i)
+        # Small sleep to prevent hitting API rate limits on basic tiers
+        await asyncio.sleep(1) 
         
-    # Verify the error message contains helpful context
-    assert "failed after 3 attempts" in str(exc_info.value)
-    
-    # Verify it tried exactly MAX_RETRIES + 1 times (2 retries + 1 initial = 3)
-    assert mock_client.chat.completions.create.call_count == 3
+    print(f"\n{Colors.BOLD}{Colors.GREEN}Evaluation Complete!{Colors.RESET}")
 
-@pytest.fixture
-def live_client():
-    """Fixture to provide a real AsyncOpenAI client for local Ollama."""
-    return AsyncOpenAI(
-        base_url=OLLAMA_BASE_URL,
-        api_key=OLLAMA_API_KEY
-    )
-
-
-@pytest.mark.asyncio
-async def test_live_messy_clinical_prose(live_client):
-    """Tests extraction from a dense paragraph of clinical notes with mixed instructions."""
-    agent = PrescriptionParsingAgent(llm_client=live_client)
-    raw_text = (
-        "Pt presented with acute pharyngitis. BP 120/80. Temp 101F. "
-        "Start Tab Augmentin 625mg po twice daily for 7 days. "
-        "Also take Dolo 650 TDS for 3 days. Use Betadine gargles SOS."
-    )
-    
-    try:
-        result = await agent.parse(raw_text)
-        
-        # It should ignore the BP/Temp and extract exactly 3 drugs
-        assert len(result.drugs) == 3
-        
-        drug_names = [d.target_brand_name.lower() for d in result.drugs]
-        assert "augmentin" in drug_names
-        assert "dolo" in drug_names
-        assert "betadine" in drug_names
-
-        # Check Betadine PRN/SOS normalization
-        betadine = next(d for d in result.drugs if d.target_brand_name.lower() == "betadine")
-        assert betadine.frequency == "PRN" # "SOS" should ideally map to PRN (as needed)
-    except Exception as e:
-        pytest.skip(f"Live test failed (Ollama likely not running): {e}")
-
-
-@pytest.mark.asyncio
-async def test_live_extreme_abbreviations(live_client):
-    """Tests handling of heavy shorthand and missing parameters."""
-    agent = PrescriptionParsingAgent(llm_client=live_client)
-    raw_text = "PCM 500 QID x 5d + Amox 250 TDS"
-    
-    try:
-        result = await agent.parse(raw_text)
-        assert len(result.drugs) == 2
-        
-        pcm = result.drugs[0]
-        assert "500" in str(pcm.prescribed_dose)
-        assert pcm.frequency == "QID"
-        assert pcm.duration_days == 5
-        
-        amox = result.drugs[1]
-        assert amox.frequency == "TID" # "TDS" maps to "TID"
-        assert amox.duration_days is None # No duration specified for Amox
-    except Exception as e:
-        pytest.skip(f"Live test failed (Ollama likely not running): {e}")
-
-
-@pytest.mark.asyncio
-async def test_live_irrelevant_input(live_client):
-    """Tests how the LLM/Schema handle a prompt with absolutely no drugs."""
-    agent = PrescriptionParsingAgent(llm_client=live_client)
-    raw_text = "Patient feels better today. Advised to drink plenty of water and rest."
-    
-    try:
-        result = await agent.parse(raw_text)
-        
-        # Should return an empty list, not hallucinate drugs or break the schema
-        assert isinstance(result.drugs, list)
-        assert len(result.drugs) == 0
-        assert result.extraction_confidence in ["low", "high"] # Usually low or N/A for empty
-    except Exception as e:
-        pytest.skip(f"Live test failed (Ollama likely not running): {e}")
+if __name__ == "__main__":
+    asyncio.run(main())

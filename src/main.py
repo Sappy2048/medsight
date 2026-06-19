@@ -1,61 +1,127 @@
-import httpx
-import asyncio
+import os
 import logging
-from src.services.fda_client import get_past_and_present_labels
-from logging import getLogger
+from typing import Optional, Union, Literal
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel, Field
+from openai import AsyncOpenAI
+from qdrant_client import QdrantClient
 
-logger = getLogger(__name__)
+from src.config import (
+    TOGETHER_BASE_URL,
+    TOGETHER_API_KEY,
+    QDRANT_URL,
+    QDRANT_API_KEY,
+)
+from src.agents.graph import run_medsight
+from src.schemas.synthesizer_schema import MedSightFinalReport
+from src.schemas.prescription_schema import ParsedPrescription
+from src.services.rag_engine import FASTEMBED_MODEL
 
-# ─── Main Driver ──────────────────────────────────────────────────────────────
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("medsight.api")
 
-async def main():
-    # Example: Let's fetch labels for Lisinopril for a prescription written in 2018
-    test_cases = [
-    {"drug": "atorvastatin", "date": "2012-05-15"},
-    {"drug": "amoxicillin",  "date": "1995-01-01"},
-    {"drug": "gabapentin",   "date": "2019-11-20"},
-    {"drug": "paxlovid",     "date": "2024-01-15"},]
+app = FastAPI(
+    title="MedSight Drug Safety Intelligence System",
+    description="REST API for retrospective drug-drug interaction detection using LangGraph.",
+    version="1.0.0",
+)
 
-    for case in test_cases:
-        # Run your get_past_and_present_labels logic here...
-        drug_name = case.get("drug","")
-        prescription_date = case.get("date","2000-01-01")
+# Initialize global clients
+if not TOGETHER_API_KEY:
+    logger.warning("TOGETHER_API_KEY is not set in environment. LLM calls may fail.")
 
-        print(f"🔍 Searching DailyMed for '{drug_name}' (Target Date: {prescription_date})...")
+llm_client = AsyncOpenAI(
+    base_url=TOGETHER_BASE_URL,
+    api_key=TOGETHER_API_KEY or "missing-key",
+)
+
+# Initialize Qdrant Client
+qdrant_client = QdrantClient(
+    url=QDRANT_URL,
+    api_key=QDRANT_API_KEY,
+)
+try:
+    qdrant_client.set_model(FASTEMBED_MODEL)
+    logger.info(f"Qdrant client initialized with FastEmbed model: {FASTEMBED_MODEL}")
+except Exception as e:
+    logger.error(f"Failed to initialize Qdrant FastEmbed model: {e}")
+
+class EvaluateRequest(BaseModel):
+    query: str = Field(
+        ...,
+        description="The raw prescription or clinical query string to evaluate.",
+        examples=["Patient prescribed Warfarin and Azithromycin in May 2015"],
+    )
+
+class MedSightSuccessResponse(BaseModel):
+    status: Literal["success"]
+    report: MedSightFinalReport
+
+class MedSightClarificationResponse(BaseModel):
+    status: Literal["clarification_required"]
+    message: str
+    partial_prescription: Optional[ParsedPrescription] = None
+
+MedSightEvaluateResponse = Union[MedSightSuccessResponse, MedSightClarificationResponse]
+
+class HealthResponse(BaseModel):
+    status: str
+    qdrant_connected: bool
+
+@app.get("/health", response_model=HealthResponse, tags=["Diagnostics"])
+async def health_check():
+    """Verify that the API server and key integrations are healthy."""
+    qdrant_connected = False
+    try:
+        # Check Qdrant connection by listing collections
+        qdrant_client.get_collections()
+        qdrant_connected = True
+    except Exception as e:
+        logger.error(f"Health check: Qdrant connection failed: {e}")
         
-        # Use a single client session for connection pooling
-        async with httpx.AsyncClient() as client:
-            try:
-                past_label, present_label = await get_past_and_present_labels(
-                    drug_name=drug_name,
-                    prescription_date=prescription_date,
-                    client=client
-                )
+    return HealthResponse(
+        status="healthy",
+        qdrant_connected=qdrant_connected,
+    )
 
-                print("\n" + "="*50)
-                print("🕰️  PAST LABEL (Active on Prescription Date)")
-                print("="*50)
-                print(f"SPL ID:         {past_label.spl_id}")
-                print(f"Set ID:         {past_label.spl_set_id}")
-                print(f"Published Date: {past_label.effective_time}")
-                
-                # Print a snippet of the Boxed Warning (or whichever section you configured)
-                boxed_warning = past_label.sections.dict().get('boxed_warning', 'No boxed warning found.')
-                snippet = boxed_warning[:200].replace('\n', ' ') if boxed_warning else "None"
-                print(f"Snippet:        {snippet}...")
+@app.post(
+    "/evaluate",
+    response_model=MedSightEvaluateResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Evaluate prescription drug safety",
+    description="Parses prescription, resolves drugs, fetches FDA labels, computes temporal diffs, and synthesizes patient safety reports.",
+    tags=["Core"],
+)
+async def evaluate(request: EvaluateRequest):
+    """
+    Accepts a raw clinical query, runs the 6-agent LangGraph workflow,
+    and returns a verified clinical safety report.
+    """
+    if not request.query.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Query string cannot be empty.",
+        )
 
-                print("\n" + "="*50)
-                print("🟢 PRESENT LABEL (Current Latest Version)")
-                print("="*50)
-                print(f"SPL ID:         {present_label.spl_id}")
-                print(f"Set ID:         {present_label.spl_set_id}")
-                print(f"Published Date: {present_label.effective_time}")
-
-            except Exception as e:
-                logger.error(f"Failed to fetch labels: {e}")
-                raise
+    logger.info(f"Received safety evaluation request: '{request.query}'")
+    try:
+        report = await run_medsight(
+            raw_input=request.query,
+            llm_client=llm_client,
+            qdrant_client=qdrant_client,
+            db_pool=None, # PostgreSQL pool not required for MVP evaluations
+        )
+        logger.info("Successfully generated safety report.")
+        return report
+    except Exception as e:
+        logger.error(f"Error executing LangGraph pipeline: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while evaluating the prescription: {str(e)}",
+        )
 
 if __name__ == "__main__":
-    # Configure basic logging so we can see warnings
-    logging.basicConfig(level=logging.INFO)
-    asyncio.run(main())
+    import uvicorn
+    # Allow running directly via python src/main.py
+    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)

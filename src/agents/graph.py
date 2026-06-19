@@ -14,8 +14,6 @@ import asyncio
 from langgraph.graph import StateGraph, END
 from openai import AsyncOpenAI
 from qdrant_client import QdrantClient
-# Assuming a mock or basic implementation for save_report as it wasn't provided
-# but requested in the brief.
 
 from src.agents.copilot import preflight_validate, oversee_report, answer_question
 from src.agents.resolution import resolve_prescription
@@ -42,7 +40,6 @@ class MedSightState(TypedDict):
 
     # ── Pipeline intermediates ────────────────────
     resolved_drugs:      List[ResolvedDrug]
-    # label_history: keyed by generic_name -> (past_label, present_label)
     label_history:       Dict[str, Any] 
     diffs:               List[DiffResult]
     reasoning:           List[Dict[str, Any]]
@@ -55,6 +52,8 @@ class MedSightState(TypedDict):
     copilot_session:     List[Dict[str, str]]
     loop_count:          int
     awaiting_input:      bool
+    should_rerun:        bool  # <-- Track routing decisions cleanly in state
+    clarification_message: Optional[str]
 
     # ── Error tracking ────────────────────────────
     errors:              List[str]
@@ -65,8 +64,13 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
     
     async def copilot_preflight_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: copilot_preflight")
-        prescription = await preflight_validate(state["raw_input"], llm_client)
-        return {"prescription": prescription}
+        prescription, clarification_msg = await preflight_validate(state["raw_input"], llm_client)
+        
+        return {
+            "prescription": prescription,
+            "clarification_message": clarification_msg,
+            "awaiting_input": bool(clarification_msg)
+        }
 
     async def resolver_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: resolver")
@@ -95,7 +99,6 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
         
         async with httpx.AsyncClient(timeout=30.0) as http_client:
             for drug in state["resolved_drugs"]:
-                # Use the first generic name as primary
                 primary_generic = drug.generic_names[0]
                 try:
                     past, present = await get_past_and_present_labels(
@@ -109,7 +112,6 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
 
     async def temporal_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: temporal (includes reasoning)")
-        
         if state["prescription"] is None:
             raise ValueError("Prescription is None — cannot compute temporal diff.")
         
@@ -123,18 +125,14 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
         else:
             prescription_date_str = str(raw_date)
         
-        # Flatten all generics for cross-pair checking
         all_generics = []
         for drug in state["resolved_drugs"]:
             all_generics.extend(drug.generic_names)
 
         for source_generic, (past_label, present_label) in state["label_history"].items():
-            # Extract interactions for both versions
-            # Note: extract_interactions is called per drug
             past_ext = await extract_interactions(past_label, source_generic, llm_client)
             present_ext = await extract_interactions(present_label, source_generic, llm_client)
             
-            # Check against other generics
             other_generics = [g for g in all_generics if g not in source_generic]
             for target in other_generics:
                 diff, reasoning = await compute_temporal_diff(
@@ -147,13 +145,10 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
 
     async def impact_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: impact")
-        
         if state["prescription"] is None:
             raise ValueError("Prescription is None — cannot analyze impact.")
         
-        # Zip diffs and reasoning back together
         diff_tuples = list(zip(state["diffs"], state["reasoning"]))
-        
         raw_date = state["prescription"].prescription_date
         if raw_date is None:
             prescription_date_str = "2024-01-01"
@@ -186,23 +181,29 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
         logger.info("Node: copilot_overseer")
         if state["final_report"] is None:
             raise ValueError("Final report is None — cannot oversee report.")
-        should_rerun, explanation = await oversee_report(state["final_report"], llm_client)
         
-        # Logic for re-run is handled in the conditional edge, 
-        # but we increment loop_count here if needed.
+        # Call overseer_report EXACTLY ONCE here
+        agent_should_rerun, explanation = await oversee_report(state["final_report"], llm_client)
+        
         new_loop_count = state["loop_count"]
-        if should_rerun and state["loop_count"] < 2:
+        actual_should_rerun = False
+
+        # Apply loop protection guardrails cleanly
+        if agent_should_rerun and state["loop_count"] < 2:
             new_loop_count += 1
+            actual_should_rerun = True
             logger.warning(f"Overseer requesting re-run. Loop count: {new_loop_count}")
         
-        return {"loop_count": new_loop_count, "awaiting_input": False}
+        return {
+            "loop_count": new_loop_count, 
+            "awaiting_input": False,
+            "should_rerun": actual_should_rerun
+        }
 
     async def persist_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: persist")
-        # Mocking DB save as src.services.database was not in files list but requested
         errors = []
         try:
-            # Placeholder for actual DB save logic
             logger.info("Saving report to database...")
         except Exception as e:
             errors.append(f"Database save failed: {e}")
@@ -227,26 +228,31 @@ def build_medsight_graph(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, d
     
     workflow = StateGraph(MedSightState)
     
-    # Add nodes
     for name, func in nodes.items():
         workflow.add_node(name, func)
         
-    # Define edges
     workflow.set_entry_point("copilot_preflight")
     
-    workflow.add_edge("copilot_preflight", "resolver")
+    def preflight_router(state: MedSightState) -> str:
+        if state.get("awaiting_input"):
+            logger.info("Graph halted: Awaiting user clarification.")
+            return END
+        return "resolver"
+
+    workflow.add_conditional_edges(
+        "copilot_preflight",
+        preflight_router
+    )
+    
     workflow.add_edge("resolver", "label_fetcher")
     workflow.add_edge("label_fetcher", "temporal")
     workflow.add_edge("temporal", "impact")
     workflow.add_edge("impact", "synthesizer")
     workflow.add_edge("synthesizer", "copilot_overseer")
     
-    # Conditional edge from overseer
-    async def should_continue(state: MedSightState):
-        if state["final_report"] is None:
-            return "persist"
-        should_rerun, _ = await oversee_report(state["final_report"], llm_client)
-        if should_rerun and state["loop_count"] < 2:
+    # Simple, stateless router relying entirely on the state context flag
+    def should_continue(state: MedSightState) -> str:
+        if state.get("should_rerun"):
             return "resolver"
         return "persist"
         
@@ -270,7 +276,7 @@ async def run_medsight(
     llm_client: AsyncOpenAI,
     qdrant_client: QdrantClient,
     db_pool: Any,
-) -> MedSightFinalReport:
+) -> Dict[str, Any]:
     """
     Main entry point for the MedSight pipeline.
     """
@@ -288,15 +294,27 @@ async def run_medsight(
         copilot_session=[],
         loop_count=0,
         awaiting_input=False,
+        should_rerun=False,
+        clarification_message=None,
         errors=[]
     )
     
     final_state = await app.ainvoke(initial_state)
+
+    if final_state.get("awaiting_input"):
+        return {
+            "status": "clarification_required",
+            "message": final_state["clarification_message"],
+            "partial_prescription": final_state["prescription"]
+        }
     
     if final_state["final_report"] is None:
         raise RuntimeError("MedSight pipeline failed to generate a final report.")
         
-    return final_state["final_report"]
+    return {
+        "status": "success",
+        "report": final_state["final_report"]
+    }
 
 async def run_copilot_qa(
     question: str,

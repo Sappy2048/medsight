@@ -3,10 +3,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Set local workspace directory for FastEmbed cache to avoid corrupted /tmp cache issues
+os.environ["FASTEMBED_CACHE_DIR"] = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data",
+    "fastembed_cache"
+)
+
 # ─── LLM Configuration (Local Ollama via OpenAI Client) ──────────────────────
-LLM_MODEL       = os.getenv("LLM_MODEL", "llama3.1:8b")
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-OLLAMA_API_KEY  = os.getenv("OLLAMA_API_KEY", "ollama")  # Dummy key required by OpenAI client
+LLM_MODEL         = "Qwen/Qwen2.5-7B-Instruct-Turbo"
+TOGETHER_BASE_URL = "https://api.together.xyz/v1"
+TOGETHER_API_KEY  = os.getenv("TOGETHER_API_KEY")
 
 SEVERITY_ONTOLOGY = {
     "contraindicated": 5,

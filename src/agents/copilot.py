@@ -25,30 +25,67 @@ from src.agents.prescription_parser import PrescriptionParsingAgent
 logger = logging.getLogger(__name__)
 
 # ─── Mode 1: Pre-flight Validation ──────────────────────────────────────────
-
 async def preflight_validate(
     raw_input: str,
     llm_client: AsyncOpenAI,
-) -> ParsedPrescription:
+) -> Tuple[ParsedPrescription, Optional[str]]:
     """
     Mode 1: Entry gate.
     Wraps the existing PrescriptionParsingAgent to extract structured data.
-    Handles errors by returning a low-confidence empty prescription.
+    Returns:
+        - ParsedPrescription: The extracted data (which may be incomplete).
+        - Optional[str]: A string asking the user for clarification if critical data is missing. 
+                         If None, the parsing was successful and complete.
     """
     parser = PrescriptionParsingAgent(llm_client)
     try:
-        # PrescriptionParsingAgent internally handles normalization and extraction
-        # It also preserves raw_input
-        return await parser.parse(raw_input)
+        parsed = await parser.parse(raw_input)
     except Exception as e:
         logger.error(f"Copilot preflight_validate failed: {e}")
-        return ParsedPrescription(
+        parsed = ParsedPrescription(
             drugs=[],
             prescription_date=None,
             patient_age=None,
             raw_input=raw_input,
             extraction_confidence="low"
         )
+
+    # The ideal format template to prepend to any clarification requests
+    ideal_format_header = (
+        "For the most accurate safety checks, please ensure your input follows this standard format:\n"
+        "**Medications:** [Drug Name] [Dose] [Frequency] [Duration]\n"
+        "**Date:** YYYY-MM-DD\n"
+        "**Age:** [Patient Age]\n\n"
+        "---\n"
+    )
+
+    # Trigger 1: Total failure or unparsable input
+    if not parsed.drugs or parsed.extraction_confidence == "low":
+        clarification_msg = (
+            f"{ideal_format_header}"
+            "I couldn't confidently extract the prescription details from your current input. "
+            "Could you please re-enter the details using the format above?"
+        )
+        return parsed, clarification_msg
+
+    # Trigger 2: Successfully parsed drugs, but missing critical metadata
+    missing_fields = []
+    if not parsed.prescription_date:
+        missing_fields.append("the prescription date")
+    if not parsed.patient_age:
+        missing_fields.append("the patient's age")
+
+    if missing_fields:
+        joined_fields = " and ".join(missing_fields)
+        clarification_msg = (
+            f"{ideal_format_header}"
+            f"I have successfully extracted the medications, but I am missing {joined_fields}. "
+            "Could you please provide this missing information?"
+        )
+        return parsed, clarification_msg
+
+    # Trigger 3: All data is present and confident
+    return parsed, None
 
 # ─── Mode 2: Overseer Logic ──────────────────────────────────────────────────
 
