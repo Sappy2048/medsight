@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 2
 
+# Maximum concurrent LLM calls when a section is split into multiple chunks.
+# Keeps burst traffic under Together AI's RPM limit.
+# Raise to 3-4 only if your API tier supports higher throughput.
+_CHUNK_CONCURRENCY = 2
+
 _INTERACTION_SECTIONS: list[
     Literal["boxed_warning", "contraindications", "warnings", "drug_interactions"]
 ] = ["boxed_warning", "contraindications", "warnings", "drug_interactions"]
@@ -123,31 +128,79 @@ OUTPUT FORMAT (strict JSON, no markdown, no explanation outside JSON):
 _SYSTEM_PROMPT = _build_system_prompt()
 
 
-# ─── Phase 1: LLM Extraction ─────────────────────────────────────────────────
+# ─── Phase 1: Text Chunking ─────────────────────────────────────────────────
 
-async def _extract_section(
+def _chunk_text(text: str, max_chars: int = 4000) -> list[str]:
+    """
+    Splits a large section string into chunks bounded by paragraph breaks (\n\n).
+
+    Paragraph-level splitting is preferred because the extraction prompt asks the
+    LLM to copy the "full surrounding paragraph" as `warning_text`. Splitting
+    mid-sentence would destroy that context window.
+
+    Fallback: a single paragraph larger than `max_chars` is emitted as-is so we
+    never silently drop text. The LLM will still parse what it can and the retry
+    logic will recover if it fails.
+
+    Args:
+        text:      Raw section text from FDALabelVersion.
+        max_chars: Soft ceiling per chunk (~4000 chars ≈ ~1 000 tokens, safely
+                   below the generation budget so the JSON response has room).
+
+    Returns:
+        List of non-empty chunk strings, in document order.
+    """
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    chunks: list[str] = []
+    current_parts: list[str] = []
+    current_len: int = 0
+
+    for para in paragraphs:
+        # Oversized single paragraph: flush current bucket first, then emit alone
+        if len(para) > max_chars:
+            if current_parts:
+                chunks.append("\n\n".join(current_parts))
+                current_parts = []
+                current_len = 0
+            chunks.append(para)
+            continue
+
+        if current_len + len(para) > max_chars and current_parts:
+            chunks.append("\n\n".join(current_parts))
+            current_parts = [para]
+            current_len = len(para)
+        else:
+            current_parts.append(para)
+            current_len += len(para)
+
+    if current_parts:
+        chunks.append("\n\n".join(current_parts))
+
+    return chunks
+
+
+# ─── Phase 2: Per-Chunk LLM Extraction ───────────────────────────────────────
+
+async def _extract_chunk(
     section_name: InteractionSection,
-    section_text: str,
+    chunk_text: str,
     source_drug: str,
     llm_client: AsyncOpenAI,
 ) -> list[dict]:
     """
-    Single LLM call to extract all drug interactions from one label section.
+    Single LLM call for one text chunk of a label section.
 
-    The LLM is responsible for:
-        - Identifying named drug mentions
-        - Extracting recommendation_text (actionable sentence)
-        - Extracting warning_text (surrounding paragraph context)
-        - Copying severity_text verbatim
-        - Mapping severity_score using the injected ontology
+    Separated from _extract_section so that chunking logic stays in the
+    orchestrator and this function stays a pure "one LLM call → list[dict]".
 
-    Returns raw list of dicts — Pydantic validation happens in _assemble_records.
-    Returns empty list on complete failure — section failure is non-fatal.
+    Returns:
+        Raw list of interaction dicts on success.
+        Empty list after all retries — never raises, section failure is non-fatal.
     """
     user_message = (
         f"Source drug: {source_drug}\n"
         f"Label section: {section_name}\n\n"
-        f"Section text:\n{section_text}"
+        f"Section text chunk:\n{chunk_text}"
     )
 
     last_error: Optional[Exception] = None
@@ -161,38 +214,161 @@ async def _extract_section(
                     {"role": "user",   "content": user_message},
                 ],
                 response_format={"type": "json_object"},
-                temperature=0.1,    # slight flexibility for severity judgment
-                max_tokens=2048,    # handles sections with 8-10 drug mentions
+                temperature=0.1,
+                max_tokens=4096,    # ~4x headroom now that each chunk is ~4 000 chars
             )
 
             content = response.choices[0].message.content or ""
             raw = json.loads(content)
 
-            # Prompt enforces {"interactions": [...]} wrapper — extract the list
-            interactions = raw.get("interactions", [])
+            if isinstance(raw, list):
+                interactions = raw
+            elif isinstance(raw, dict):
+                interactions = raw.get("interactions", [])
+            else:
+                raise ValueError(f"Unexpected JSON structure returned from LLM: {type(raw)}")
 
             if not isinstance(interactions, list):
                 raise ValueError(
-                    f"Expected 'interactions' to be a list, got {type(interactions)}"
+                    f"Expected 'interactions' list, got {type(interactions)}"
                 )
 
             logger.debug(
-                f"Section '{section_name}' → {len(interactions)} interactions extracted"
+                f"Chunk of '{section_name}' → {len(interactions)} interactions"
             )
             return interactions
 
         except (json.JSONDecodeError, ValueError, Exception) as e:
             last_error = e
             logger.warning(
-                f"Extraction attempt {attempt + 1}/{_MAX_RETRIES + 1} "
+                f"Chunk extraction attempt {attempt + 1}/{_MAX_RETRIES + 1} "
                 f"for section '{section_name}' failed: {e}"
             )
 
     logger.error(
-        f"Section '{section_name}' extraction failed after all retries: {last_error}. "
-        f"Skipping — pipeline continues with other sections."
+        f"Chunk of section '{section_name}' failed after all retries: {last_error}. "
+        f"Skipping chunk — pipeline continues."
     )
     return []
+
+
+# ─── Phase 3: Section Orchestrator ───────────────────────────────────────────
+
+def _deduplicate_interactions(raw_list: list[dict]) -> list[dict]:
+    """
+    Deduplicates interactions that were extracted from multiple chunks of the
+    same section — keeps the record with the highest `severity_score`.
+
+    Deduplication key: (target_drug.lower(), section_name).
+    This prevents a Warfarin→Aspirin interaction appearing 3 times because
+    the same paragraph was caught in two overlapping chunks.
+
+    Pure function — does not mutate input.
+    """
+    best: dict[tuple[str, str], dict] = {}
+
+    for item in raw_list:
+        drug_key = str(item.get("target_drug", "")).lower().strip()
+        section_key = str(item.get("_section", ""))  # injected by orchestrator
+        key = (drug_key, section_key)
+
+        # Defensive score parsing — LLM may return null, empty string, or a
+        # quoted number ("2"). A bare int() on any of those would ValueError
+        # here, crashing aggregation before _assemble_records can act as firewall.
+        try:
+            raw_score = item.get("severity_score")
+            current_score = int(raw_score) if raw_score is not None else 0
+        except (ValueError, TypeError):
+            current_score = 0
+
+        existing = best.get(key)
+        if existing is None:
+            best[key] = item
+        else:
+            try:
+                existing_score = int(existing.get("severity_score", 0))
+            except (ValueError, TypeError):
+                existing_score = 0
+
+            if current_score > existing_score:
+                best[key] = item
+
+    return list(best.values())
+
+
+async def _extract_section(
+    section_name: InteractionSection,
+    section_text: str,
+    source_drug: str,
+    llm_client: AsyncOpenAI,
+) -> list[dict]:
+    """
+    Orchestrates extraction over one label section.
+
+    For short sections (fits in a single chunk) this is a transparent pass-through
+    to `_extract_chunk` — no overhead.
+
+    For large sections (e.g. Warfarin drug_interactions) it:
+        1. Splits text into paragraph-bounded chunks of ≤4 000 chars.
+        2. Fans out all chunks concurrently via asyncio.gather.
+        3. Flattens the results.
+        4. Deduplicates by (target_drug, section) keeping the highest severity.
+
+    Returns:
+        Aggregated, deduplicated list of raw interaction dicts.
+        Empty list on complete failure — never raises.
+    """
+    chunks = _chunk_text(section_text, max_chars=4000)
+
+    if len(chunks) == 1:
+        # Fast path — no chunking overhead for standard-sized sections
+        return await _extract_chunk(section_name, chunks[0], source_drug, llm_client)
+
+    logger.info(
+        f"Section '{section_name}' split into {len(chunks)} chunks "
+        f"(total chars: {len(section_text)}) — "
+        f"concurrency cap: {_CHUNK_CONCURRENCY}."
+    )
+
+    # Semaphore is created per-section, not per-module, so concurrent
+    # calls to extract_interactions (different label sections) each get
+    # their own independent pool — they don't starve each other.
+    sem = asyncio.Semaphore(_CHUNK_CONCURRENCY)
+
+    async def _throttled_chunk(chunk: str) -> list[dict]:
+        async with sem:
+            return await _extract_chunk(section_name, chunk, source_drug, llm_client)
+
+    tasks = [_throttled_chunk(chunk) for chunk in chunks]
+    chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    aggregated: list[dict] = []
+    for i, result in enumerate(chunk_results):
+        if isinstance(result, BaseException):
+            logger.error(
+                f"Chunk {i + 1}/{len(chunks)} of section '{section_name}' "
+                f"raised: {result} — skipping chunk."
+            )
+            continue
+        # Tag each raw dict with section name for the deduplication key
+        for item in result:
+            item["_section"] = section_name
+        aggregated.extend(result)
+
+    deduped = _deduplicate_interactions(aggregated)
+
+    if len(aggregated) != len(deduped):
+        logger.info(
+            f"Section '{section_name}': {len(aggregated)} raw → "
+            f"{len(deduped)} after deduplication."
+        )
+
+    # Strip the internal _section tag — _assemble_records receives
+    # section_name as an explicit argument, not from the dict.
+    for item in deduped:
+        item.pop("_section", None)
+
+    return deduped
 
 
 # ─── Assembler ────────────────────────────────────────────────────────────────
@@ -216,9 +392,29 @@ def _assemble_records(
     to be logged and skipped, never silently corrupted.
     """
     records: list[InteractionRecord] = []
+    clean_source = source_drug.lower().strip()
 
     for raw in raw_interactions:
         try:
+            target_drug_raw = raw.get("target_drug", "")
+
+            # Skip records with no target drug
+            if not target_drug_raw:
+                continue
+
+            clean_target = str(target_drug_raw).lower().strip()
+
+            # Guardrail: 7B models can mistake the source drug for a target drug
+            # when parsing self-referential warnings (e.g. "Azithromycin is
+            # contraindicated in patients with prior use of azithromycin").
+            # Drop any record where target is a substring of source or vice-versa.
+            if clean_target == clean_source or clean_source in clean_target or clean_target in clean_source:
+                logger.debug(
+                    f"Filtered self-referential record: target='{target_drug_raw}' "
+                    f"source='{source_drug}' section='{section_name}'"
+                )
+                continue
+
             # Clamp LLM score to valid ontology range — defensive, not trusting
             raw_score = int(raw.get("severity_score", 0))
             severity_score = max(0, min(5, raw_score))
@@ -226,7 +422,7 @@ def _assemble_records(
             if raw_score != severity_score:
                 logger.warning(
                     f"LLM returned out-of-range severity_score={raw_score} "
-                    f"for target='{raw.get('target_drug')}' — clamped to {severity_score}"
+                    f"for target='{target_drug_raw}' — clamped to {severity_score}"
                 )
 
             record = InteractionRecord(
