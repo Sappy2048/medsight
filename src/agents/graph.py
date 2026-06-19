@@ -133,7 +133,9 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
             past_ext = await extract_interactions(past_label, source_generic, llm_client)
             present_ext = await extract_interactions(present_label, source_generic, llm_client)
             
-            other_generics = [g for g in all_generics if g not in source_generic]
+            other_generics = [
+                g for g in all_generics 
+                if g.lower() != source_generic.lower()]
             for target in other_generics:
                 diff, reasoning = await compute_temporal_diff(
                     past_ext, present_ext, target, llm_client, prescription_date_str
