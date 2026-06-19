@@ -14,7 +14,7 @@ from src.services.fda_client import get_past_and_present_labels
 from src.agents.extraction import extract_interactions
 from src.agents.temporal import compute_temporal_diff
 from src.schemas.resolution_schema import ResolvedDrug
-from src.config import OLLAMA_BASE_URL, OLLAMA_API_KEY, LLM_MODEL
+from src.config import TOGETHER_BASE_URL, TOGETHER_API_KEY, LLM_MODEL
 
 # ─── Formatting Helpers ────────────────────────────────────────────────────────
 
@@ -50,8 +50,8 @@ async def run_e2e_pipeline():
     load_dotenv()
     
     llm_client = AsyncOpenAI(
-        base_url=OLLAMA_BASE_URL,
-        api_key=OLLAMA_API_KEY
+        base_url=TOGETHER_BASE_URL,
+        api_key=TOGETHER_API_KEY
     )
     
     # Standard configuration for the demo

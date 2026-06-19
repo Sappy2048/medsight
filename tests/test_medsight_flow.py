@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from src.agents.graph import run_medsight, run_copilot_qa
 from src.schemas.synthesizer_schema import MedSightFinalReport
-from src.config import OLLAMA_BASE_URL, OLLAMA_API_KEY
+from src.config import TOGETHER_BASE_URL, TOGETHER_API_KEY
 
 async def test_full_agentic_flow():
     load_dotenv()
@@ -16,8 +16,8 @@ async def test_full_agentic_flow():
 
     # 1. Setup Clients
     llm_client = AsyncOpenAI(
-        base_url=OLLAMA_BASE_URL,
-        api_key=OLLAMA_API_KEY
+        base_url=TOGETHER_BASE_URL,
+        api_key=TOGETHER_API_KEY
     )
     
     # Setup Qdrant

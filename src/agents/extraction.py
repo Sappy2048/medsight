@@ -1,30 +1,3 @@
-"""
-extraction.py — FDA Label Interaction Extraction Agent
-
-Responsibility:
-    Takes a FDALabelVersion (output of fda_client) and extracts all
-    drug interaction records from the 4 interaction-relevant sections:
-        - boxed_warning
-        - contraindications
-        - warnings
-        - drug_interactions
-
-    Single-phase LLM extraction: the model extracts drug mentions,
-    recommendation text, surrounding warning context, raw severity phrase,
-    AND severity score in one pass. No post-hoc fuzzy matching.
-
-    The SEVERITY_ONTOLOGY is injected directly into the prompt so the LLM
-    scores against the same 0-5 scale used by temporal.py — no translation
-    layer needed.
-
-Exposed function:
-    async def extract_interactions(
-        label:       FDALabelVersion,
-        source_drug: str,
-        llm_client: AsyncOpenAI,
-    ) -> ExtractionResult
-"""
-
 import json
 import logging
 from typing import Optional, Literal, cast
@@ -40,11 +13,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 2
 
-# Maximum concurrent LLM calls when a section is split into multiple chunks.
-# Keeps burst traffic under Together AI's RPM limit.
-# Raise to 3-4 only if your API tier supports higher throughput.
-_CHUNK_CONCURRENCY = 2
-
 _INTERACTION_SECTIONS: list[
     Literal["boxed_warning", "contraindications", "warnings", "drug_interactions"]
 ] = ["boxed_warning", "contraindications", "warnings", "drug_interactions"]
@@ -56,15 +24,27 @@ InteractionSection = Literal[
     "drug_interactions",
 ]
 
+# Global pool configuration constants
+_CHUNK_CONCURRENCY = 6
+_GLOBAL_CONCURRENCY_POOL: Optional[asyncio.Semaphore] = None
+
+
+def _get_concurrency_pool() -> asyncio.Semaphore:
+    """
+    Lazy-instantiates the global semaphore pool within the active event loop
+    to prevent cross-loop execution boundaries and runtime attachment errors.
+    """
+    global _GLOBAL_CONCURRENCY_POOL
+    if _GLOBAL_CONCURRENCY_POOL is None:
+        _GLOBAL_CONCURRENCY_POOL = asyncio.Semaphore(_CHUNK_CONCURRENCY)
+    return _GLOBAL_CONCURRENCY_POOL
+
+
 # ─── Prompt Builder ────────────────────────────────────────────────────────────
 
 def _build_system_prompt() -> str:
     """
     Build the extraction system prompt with SEVERITY_ONTOLOGY injected.
-
-    Injecting the ontology at build time (not hardcoded) means if config.py
-    changes the scale, the prompt automatically stays in sync — no manual
-    prompt editing required.
     """
     ontology_lines = "\n".join(
         f'  {score} = "{phrase}"'
@@ -101,13 +81,20 @@ RULES (non-negotiable):
 1. Extract ONLY interactions where a specific drug name is explicitly mentioned.
    Drug class warnings (e.g. "NSAIDs", "anticoagulants") without a specific
    named drug do NOT qualify — skip them.
-2. severity_text must be copied verbatim from the label. Do not paraphrase.
-3. severity_score must reflect the true clinical severity of the interaction
+2. The target_drug must be a completely different active ingredient/compound than the source_drug. 
+   Never extract the source drug interacting with itself.
+3. Extract ONLY true Drug-Drug interactions. Do NOT extract drug-disease interactions 
+   (e.g., pregnancy, liver failure, renal impairment) or patient allergies/hypersensitivities.
+4. severity_text must be copied verbatim from the label. Do not paraphrase.
+5. severity_score must reflect the true clinical severity of the interaction
    as described in the full context — not just the literal keyword match.
    Example: "use is not recommended due to risk of fatal hemorrhage" should
    score 4 ("avoid"), not 1 ("monitor"), even if the word "avoid" is absent.
-4. If no specific named drug interactions are present, return an empty array.
-5. Never invent a drug name not present in the text.
+6. If no specific named drug interactions are present, return an empty array.
+7. Never invent a drug name not present in the text.
+8. Clean text blocks: Normalize and compress the string payloads for recommendation_text and 
+   warning_text. Strip out any redundant, consecutive repeating whitespaces, tab spacing, or 
+   multiple back-to-back newline breaks (\n\n\n) while preserving the exact verbatim clinical words.
 
 OUTPUT FORMAT (strict JSON, no markdown, no explanation outside JSON):
 {{
@@ -115,7 +102,7 @@ OUTPUT FORMAT (strict JSON, no markdown, no explanation outside JSON):
     {{
       "target_drug":         "<exact drug name from label>",
       "recommendation_text": "<direct quote — actionable sentence>",
-      "warning_text":        "<direct quote — full surrounding paragraph>",
+      "warning_text":        "<direct quote — full surrounding paragraph with minimized whitespace>",
       "severity_text":       "<verbatim severity phrase from label>",
       "severity_score":      <integer 0-5>
     }}
@@ -124,7 +111,6 @@ OUTPUT FORMAT (strict JSON, no markdown, no explanation outside JSON):
 """
 
 
-# Build once at module load — ontology is static at runtime
 _SYSTEM_PROMPT = _build_system_prompt()
 
 
@@ -133,22 +119,6 @@ _SYSTEM_PROMPT = _build_system_prompt()
 def _chunk_text(text: str, max_chars: int = 4000) -> list[str]:
     """
     Splits a large section string into chunks bounded by paragraph breaks (\n\n).
-
-    Paragraph-level splitting is preferred because the extraction prompt asks the
-    LLM to copy the "full surrounding paragraph" as `warning_text`. Splitting
-    mid-sentence would destroy that context window.
-
-    Fallback: a single paragraph larger than `max_chars` is emitted as-is so we
-    never silently drop text. The LLM will still parse what it can and the retry
-    logic will recover if it fails.
-
-    Args:
-        text:      Raw section text from FDALabelVersion.
-        max_chars: Soft ceiling per chunk (~4000 chars ≈ ~1 000 tokens, safely
-                   below the generation budget so the JSON response has room).
-
-    Returns:
-        List of non-empty chunk strings, in document order.
     """
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     chunks: list[str] = []
@@ -156,7 +126,6 @@ def _chunk_text(text: str, max_chars: int = 4000) -> list[str]:
     current_len: int = 0
 
     for para in paragraphs:
-        # Oversized single paragraph: flush current bucket first, then emit alone
         if len(para) > max_chars:
             if current_parts:
                 chunks.append("\n\n".join(current_parts))
@@ -189,13 +158,6 @@ async def _extract_chunk(
 ) -> list[dict]:
     """
     Single LLM call for one text chunk of a label section.
-
-    Separated from _extract_section so that chunking logic stays in the
-    orchestrator and this function stays a pure "one LLM call → list[dict]".
-
-    Returns:
-        Raw list of interaction dicts on success.
-        Empty list after all retries — never raises, section failure is non-fatal.
     """
     user_message = (
         f"Source drug: {source_drug}\n"
@@ -215,7 +177,7 @@ async def _extract_chunk(
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.1,
-                max_tokens=4096,    # ~4x headroom now that each chunk is ~4 000 chars
+                max_tokens=4096,
             )
 
             content = response.choices[0].message.content or ""
@@ -258,23 +220,14 @@ def _deduplicate_interactions(raw_list: list[dict]) -> list[dict]:
     """
     Deduplicates interactions that were extracted from multiple chunks of the
     same section — keeps the record with the highest `severity_score`.
-
-    Deduplication key: (target_drug.lower(), section_name).
-    This prevents a Warfarin→Aspirin interaction appearing 3 times because
-    the same paragraph was caught in two overlapping chunks.
-
-    Pure function — does not mutate input.
     """
     best: dict[tuple[str, str], dict] = {}
 
     for item in raw_list:
         drug_key = str(item.get("target_drug", "")).lower().strip()
-        section_key = str(item.get("_section", ""))  # injected by orchestrator
+        section_key = str(item.get("_section", ""))
         key = (drug_key, section_key)
 
-        # Defensive score parsing — LLM may return null, empty string, or a
-        # quoted number ("2"). A bare int() on any of those would ValueError
-        # here, crashing aggregation before _assemble_records can act as firewall.
         try:
             raw_score = item.get("severity_score")
             current_score = int(raw_score) if raw_score is not None else 0
@@ -304,39 +257,22 @@ async def _extract_section(
 ) -> list[dict]:
     """
     Orchestrates extraction over one label section.
-
-    For short sections (fits in a single chunk) this is a transparent pass-through
-    to `_extract_chunk` — no overhead.
-
-    For large sections (e.g. Warfarin drug_interactions) it:
-        1. Splits text into paragraph-bounded chunks of ≤4 000 chars.
-        2. Fans out all chunks concurrently via asyncio.gather.
-        3. Flattens the results.
-        4. Deduplicates by (target_drug, section) keeping the highest severity.
-
-    Returns:
-        Aggregated, deduplicated list of raw interaction dicts.
-        Empty list on complete failure — never raises.
     """
     chunks = _chunk_text(section_text, max_chars=4000)
 
     if len(chunks) == 1:
-        # Fast path — no chunking overhead for standard-sized sections
         return await _extract_chunk(section_name, chunks[0], source_drug, llm_client)
 
     logger.info(
         f"Section '{section_name}' split into {len(chunks)} chunks "
-        f"(total chars: {len(section_text)}) — "
-        f"concurrency cap: {_CHUNK_CONCURRENCY}."
+        f"(total chars: {len(section_text)}) — global pool constraint applied."
     )
 
-    # Semaphore is created per-section, not per-module, so concurrent
-    # calls to extract_interactions (different label sections) each get
-    # their own independent pool — they don't starve each other.
-    sem = asyncio.Semaphore(_CHUNK_CONCURRENCY)
+    # Reference the safe lazy-instantiated module event loop pool
+    pool = _get_concurrency_pool()
 
     async def _throttled_chunk(chunk: str) -> list[dict]:
-        async with sem:
+        async with pool:
             return await _extract_chunk(section_name, chunk, source_drug, llm_client)
 
     tasks = [_throttled_chunk(chunk) for chunk in chunks]
@@ -350,10 +286,10 @@ async def _extract_section(
                 f"raised: {result} — skipping chunk."
             )
             continue
-        # Tag each raw dict with section name for the deduplication key
         for item in result:
-            item["_section"] = section_name
-        aggregated.extend(result)
+            if isinstance(item, dict):
+                item["_section"] = section_name
+                aggregated.append(item)
 
     deduped = _deduplicate_interactions(aggregated)
 
@@ -363,10 +299,9 @@ async def _extract_section(
             f"{len(deduped)} after deduplication."
         )
 
-    # Strip the internal _section tag — _assemble_records receives
-    # section_name as an explicit argument, not from the dict.
     for item in deduped:
-        item.pop("_section", None)
+        if isinstance(item, dict):
+            item.pop("_section", None)
 
     return deduped
 
@@ -382,14 +317,6 @@ def _assemble_records(
 ) -> list[InteractionRecord]:
     """
     Converts raw LLM output dicts into validated InteractionRecord objects.
-
-    severity_score is taken directly from the LLM output — no post-hoc
-    mapping. Pydantic enforces int type. If the LLM returns a score outside
-    0-5, it is clamped here before Pydantic sees it, rather than letting
-    Pydantic raise a validation error and discard an otherwise valid record.
-
-    Pydantic is the final firewall — missing required fields cause the record
-    to be logged and skipped, never silently corrupted.
     """
     records: list[InteractionRecord] = []
     clean_source = source_drug.lower().strip()
@@ -398,16 +325,11 @@ def _assemble_records(
         try:
             target_drug_raw = raw.get("target_drug", "")
 
-            # Skip records with no target drug
             if not target_drug_raw:
                 continue
 
             clean_target = str(target_drug_raw).lower().strip()
 
-            # Guardrail: 7B models can mistake the source drug for a target drug
-            # when parsing self-referential warnings (e.g. "Azithromycin is
-            # contraindicated in patients with prior use of azithromycin").
-            # Drop any record where target is a substring of source or vice-versa.
             if clean_target == clean_source or clean_source in clean_target or clean_target in clean_source:
                 logger.debug(
                     f"Filtered self-referential record: target='{target_drug_raw}' "
@@ -415,7 +337,6 @@ def _assemble_records(
                 )
                 continue
 
-            # Clamp LLM score to valid ontology range — defensive, not trusting
             raw_score = int(raw.get("severity_score", 0))
             severity_score = max(0, min(5, raw_score))
 
@@ -456,20 +377,6 @@ async def extract_interactions(
 ) -> ExtractionResult:
     """
     Main entry point for the Extraction Agent.
-
-    Args:
-        label:       FDALabelVersion from fda_client — contains spl_id,
-                     effective_time, and the 4 parsed label sections.
-        source_drug: The drug whose label this is (e.g. "Warfarin").
-        llm_client: Shared AsyncOpenAI client — injected, never created here.
-
-    Returns:
-        ExtractionResult with all InteractionRecord objects found across
-        all 4 sections. Empty interactions list is valid — not an error.
-
-    Concurrency:
-        All non-null sections are extracted concurrently via asyncio.gather.
-        Section failures are isolated — one bad LLM call never kills the job.
     """
     section_tasks: list[tuple[InteractionSection, asyncio.Task[list[dict]]]] = []
 
@@ -525,4 +432,3 @@ async def extract_interactions(
         spl_id=label.spl_id,
         interactions=all_records,
     )
-

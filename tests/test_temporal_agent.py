@@ -7,15 +7,15 @@ from dotenv import load_dotenv
 
 from src.agents.temporal import compute_temporal_diff
 from src.schemas.diff_schema import ExtractionResult, InteractionRecord
-from src.config import SEVERITY_ONTOLOGY, OLLAMA_BASE_URL, OLLAMA_API_KEY
+from src.config import SEVERITY_ONTOLOGY, TOGETHER_BASE_URL, TOGETHER_API_KEY
 
 async def test_temporal_logic():
     load_dotenv()
     logging.basicConfig(level=logging.INFO)
 
     client = AsyncOpenAI(
-        base_url=OLLAMA_BASE_URL,
-        api_key=OLLAMA_API_KEY
+        base_url=TOGETHER_BASE_URL,
+        api_key=TOGETHER_API_KEY
     )
 
     # 1. Setup Mock Data

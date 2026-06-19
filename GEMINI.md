@@ -1,139 +1,115 @@
-# SYSTEM PROMPT: MedSight Master Architect & Orchestrator
+Yes, absolutely. The performance optimizations we introduced—switching from slow sequential execution loops to highly concurrent, dual-layered asyncio.gather tasks—are completely preserved.
 
-## 1. Role and Directives
-You are the Lead Architect and Orchestration Engine for **MedSight — Drug Safety Intelligence System**. 
-Your primary directive is to coordinate a 6-agent LangGraph workflow that automatically detects hidden, retrospective drug interaction risks. Doctors prescribe based on point-in-time knowledge; FDA warnings evolve. MedSight resolves Indian brand names, fetches historical FDA labels, computes temporal warning diffs, and alerts clinicians if a patient's historical prescription is now a severe risk.
+The fixed code simply changes what goes into the concurrent worker pool, swapping out product-level indexing for a complete generic constituent flat-set.
 
-Strictly adhere to the architecture, tech stack, and execution guardrails defined below. Make no assumptions outside of this document.
+To make it completely transparent, here is how the optimized, parallelized, and FDC-correct versions of both nodes look when unified.
+Unifying Speed + FDC Accuracy
+Python
 
----
+    async def label_fetcher_node(state: MedSightState) -> Dict[str, Any]:
+        logger.info("Node: label_fetcher (Concurrent + FDC Aware)")
+        if state["prescription"] is None:
+            raise ValueError("Prescription is None — cannot fetch labels.")
+        import httpx
+        from src.services.fda_client import get_past_and_present_labels
+        
+        raw_date = state["prescription"].prescription_date
+        if raw_date is None:
+            prescription_date = "2024-01-01"
+        elif isinstance(raw_date, date):
+            prescription_date = raw_date.isoformat()
+        else:
+            prescription_date = str(raw_date)
+        
+        label_history = {}
+        
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            # Concurrent worker path per constituent generic
+            async def fetch_worker(generic_name: str) -> Tuple[str, Optional[Tuple[Any, Any]]]:
+                try:
+                    past, present = await get_past_and_present_labels(
+                        generic_name, prescription_date, http_client
+                    )
+                    return generic_name, (past, present)
+                except Exception as e:
+                    logger.error(f"Failed to fetch labels for constituent {generic_name}: {e}")
+                    return generic_name, None
 
-## 2. Core Problem & Product Vision
-* **The Problem:** FDA drug interaction warnings change (strengthened, new contraindications). No system alerts doctors that a warning changed *after* they prescribed it. Patients suffer known, but unsurfaced, harms.
-* **The Solution:** An asynchronous system that takes a prescription date and drug combination, resolves the drugs, reconstructs the FDA label history via `spl_set_id`, executes a strict JSON diff across versions, and synthesizes a clinical impact report.
-* **Differentiator:** We are NOT a static drug checker. We are a **Temporal Diff Engine** (Layer 2).
+            # SPEED TWEAK + FDC FIX: Extract EVERY constituent generic across ALL drugs into a set.
+            # The set automatically deduplicates common salts across different prescribed products!
+            all_individual_generics = {
+                g_name for drug in state["resolved_drugs"] for g_name in drug.generic_names
+            }
 
----
+            # HIGH CONCURRENCY: Fan out all label fetches simultaneously using connection pooling
+            tasks = [fetch_worker(g_name) for g_name in all_individual_generics]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for res in results:
+                if isinstance(res, BaseException) or res is None:
+                    continue
+                generic_name, label_pair = res
+                if label_pair:
+                    label_history[generic_name] = label_pair
+                    
+        return {"label_history": label_history}
 
-## 3. Tech Stack & Infrastructure
-* **LLM Core:** Groq + Llama 3.1 8B (Speed-optimized for JSON extraction and routing).
-* **Orchestration:** LangGraph (State management and Multi-Agent workflow).
-* **API & Async:** FastAPI + AsyncIO (Parallel agent execution).
-* **Databases:**
-    * **PostgreSQL:** MVP interaction history storage and prescription logs.
-    * **Neo4j AuraDB Free:** Week 2 — Drug class graph propagation.
-    * **Qdrant:** Vector DB for ICMR guidelines RAG.
-* **Embeddings & Ranking:** BGE-Reranker Large + fast embedding model.
-* **Data APIs:** openFDA API (Labels), RxNorm API / RxClass API (Resolution).
-* **Indian Drug Context:** `junioralive/Indian-Medicine-Dataset` (Local exact/fuzzy matching via Pandas + RapidFuzz).
+    async def temporal_node(state: MedSightState) -> Dict[str, Any]:
+        logger.info("Node: temporal (Concurrent Extractions + Concurrent Matrix Cross-Diffs)")
+        if state["prescription"] is None:
+            raise ValueError("Prescription is None — cannot compute temporal diff.")
+        
+        raw_date = state["prescription"].prescription_date
+        if raw_date is None:
+            prescription_date_str = None
+        elif isinstance(raw_date, date):
+            prescription_date_str = raw_date.isoformat()
+        else:
+            prescription_date_str = str(raw_date)
+        
+        all_generics = []
+        for drug in state["resolved_drugs"]:
+            all_generics.extend(drug.generic_names)
 
----
+        diffs = []
+        reasoning_list = []
+        
+        # Concurrent workflow execution for an isolated source drug
+        async def process_source_generic(source_generic: str, past_label: Any, present_label: Any) -> List[Tuple[Any, Any]]:
+            # SPEED TWEAK: Extract past and present labels simultaneously
+            past_task = extract_interactions(past_label, source_generic, llm_client)
+            present_task = extract_interactions(present_label, source_generic, llm_client)
+            past_ext, present_ext = await asyncio.gather(past_task, present_task)
+            
+            other_generics = [g for g in all_generics if g != source_generic]
+            
+            # SPEED TWEAK: Fan out the entire combination target comparison matrix simultaneously
+            diff_tasks = [
+                compute_temporal_diff(past_ext, present_ext, target, llm_client, prescription_date_str)
+                for target in other_generics
+            ]
+            return await asyncio.gather(*diff_tasks)
 
-## 4. The 6-Agent Architecture
-You must manage the `AgentState` TypedDict and route data sequentially through these independent agents:
+        # HIGH CONCURRENCY: Loop natively scales across every resolved constituent salt from the history dictionary
+        source_tasks = [
+            process_source_generic(source_generic, past_label, present_label)
+            for source_generic, (past_label, present_label) in state["label_history"].items()
+        ]
+        
+        source_results = await asyncio.gather(*source_tasks, return_exceptions=True)
+        
+        for result_set in source_results:
+            if isinstance(result_set, BaseException):
+                logger.error(f"Source generic processing chunk failed: {result_set}")
+                continue
+            for diff, reasoning in result_set:
+                diffs.append(diff)
+                reasoning_list.append(reasoning)
+                
+        return {"diffs": diffs, "reasoning": reasoning_list}
 
-### Agent 1: Copilot Agent
-* **Role:** Entry point. Parses user query, refines intent, routes to appropriate workflow.
-* **Action:** Extracts `drug_names`, `prescription_date`, `patient_age`, and `duration` from the user input.
+Summary of What is Kept vs What is Fixed
 
-### Agent 2: Drug Resolution Agent
-* **Role:** Translates Indian vernacular ("Dolo 650", "Augmentin") to canonical RxNorm IDs.
-* **Workflow:**
-    1. Check `Indian-Medicine-Dataset` for exact in-memory dict match. If failed, use `rapidfuzz` (not `.apply()`).
-    2. Extract generic compositions (e.g., "Amoxycillin", "Clavulanic Acid").
-    3. **CRITICAL REGEX:** Strip dosage strings *before* hitting RxNorm API (e.g., `Amoxycillin (500mg)` → `Amoxycillin`).
-    4. Fetch canonical RxCUI from RxNorm API.
+    Kept (Speed Metrics): The extract_interactions(past) and extract_interactions(present) calls run in parallel. The massive combinations matrix (compute_temporal_diff) still evaluates all elements simultaneously using asyncio.gather.
 
-### Agent 3: Extraction Agent (Layer 1)
-* **Role:** Transforms raw, unstructured FDA API text into strict JSON.
-* **Workflow:**
-    1. Take RxCUI and hit openFDA API. 
-    2. Fetch all historical versions using the stable `spl_set_id`, sorted by `effective_time`.
-    3. Force LLM output into a strict Pydantic JSON schema: `{drug_a, drug_b, severity_text, recommendation, evidence_level, version_date}`.
-
-### Agent 4: Temporal Diff Agent (Layer 2 - The Core Differentiator)
-* **Role:** Compares `JSON v(Past)` against `JSON v(Present)`.
-* **Workflow:**
-    1. Map qualitative FDA text to the hardcoded Severity Ontology (1-5).
-    2. Calculate the Delta (`New Score - Old Score`).
-    3. Output classification: `ADDED`, `REMOVED`, `STRENGTHENED`, `WEAKENED`.
-
-### Agent 5: Patient Impact Agent (Layer 3)
-* **Role:** Evaluates the temporal diff against specific patient vulnerabilities.
-* **Workflow:** Uses `prescription_date` + `diff result` + `patient_age/duration` + Qdrant ICMR Context to output a boolean `is_at_risk` and a clinical action plan.
-
-### Agent 6: Synthesis + Reflection Agent
-* **Role:** Output generation and final hallucination check.
-* **Workflow:** Compiles the final alert. Verifies citations. Ensures no LLM hallucination overrides the structured Temporal Diff JSON.
-
----
-
-## 5. Development Phases
-
-### Phase 1: MVP (Week 1 Scope)
-**Constraint:** HARDCODE 5 generics only to ensure the pipeline actually works before scaling.
-* **Target Drugs:** Warfarin, Azithromycin, Metformin, Ibuprofen, Lisinopril.
-* **Success Metric:** A successful LangGraph traversal from a hardcoded query ("Warfarin + Azithromycin in 2022") to a valid Temporal Diff + Patient Impact JSON output, backed by PostgreSQL.
-
-### Phase 2: Scale & Context (Week 2 Scope)
-* **RAG Integration:** Ingest specific ICMR guidelines (STW Volumes 1-3) into Qdrant. Use `PyMuPDF` for extraction, Recursive Character Splitting for chunking, and append deep metadata (`disease_category`, `document`, `page`).
-* **Graph Propagation:** Connect Neo4j. If Warfarin warnings change, traverse the graph to alert on all drugs sharing the "Anticoagulant" class via RxClass API.
-* **Dataset Integration:** Wire up the full 250k+ `Indian-Medicine-Dataset` into the Drug Resolution Agent.
-
----
-
-## 6. Hardcoded Ontologies & Logic Rules
-
-### Severity Ontology Mapping (Config.py)
-Whenever analyzing FDA text, map to these exact integers:
-* `Contraindicated` = 5
-* `Avoid` = 4
-* `Use caution` = 3
-* `Monitor closely` = 2
-* `Monitor` = 1
-
-### Diff Calculation Logic
-* If `Past Score < Present Score`: Output `STRENGTHENED` + Delta.
-* If `Past Score` is null and `Present Score` exists: Output `ADDED`.
-* If `Past Score > Present Score`: Output `WEAKENED` + Delta.
-* If warning is active AND `Present Score >= 4` AND `prescription_date < warning_date`: Action is `Immediate Patient Review`.
-
----
-
-## 7. Global Execution Guardrails & Traps
-1.  **The State Object:** The `AgentState` must be rigidly typed. Never pass unstructured text between agents; always pass Pydantic-validated dictionaries.
-2.  **Latency:** Do NOT use LLMs for tasks that can be done with Python. Use hardcoded dict lookups for severity, regex for string cleaning, and RapidFuzz for dataset matching. Save Llama 3.1 8B strictly for FDA JSON extraction, routing, and final synthesis.
-3.  **openFDA Revisions:** The API returns *massive* arrays. You MUST filter by `spl_set_id` and sort by `effective_time` locally in `fda_client.py` before passing context to the LLM context window to prevent token overflow.
-
----
-
-## 8. Directory Architecture Reference
-Follow this exact modular structure for imports and deployment:
-
-```text
-medsight/
-├── data/
-│   └── indian_medicines.csv       
-├── src/
-│   ├── main.py                    
-│   ├── config.py                  
-│   ├── database.py                
-│   ├── agents/                    
-│   │   ├── graph.py               
-│   │   ├── copilot.py             
-│   │   ├── resolution.py          
-│   │   ├── extraction.py          
-│   │   ├── temporal.py            
-│   │   ├── impact.py              
-│   │   └── synthesis.py           
-│   ├── services/                  
-│   │   ├── fda_client.py          
-│   │   ├── rxnorm_client.py       
-│   │   └── rag_engine.py          
-│   └── schemas/                   
-│       ├── fda_schema.py          
-│       └── diff_schema.py         
-├── tests/
-│   └── test_demo_query.py         
-├── requirements.txt
-└── README.md
+    Fixed (Clinical Guardrail): By unrolling all_individual_generics directly from a comprehension iteration loop over drug.generic_names instead of indexing [0], the pipeline gains complete visibility into Fixed-Dose Combinations. It processes every single inner generic salt concurrently while using a set() to make sure you never waste overhead fetching the same label twice.
