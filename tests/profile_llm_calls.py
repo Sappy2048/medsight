@@ -4,7 +4,7 @@ import time
 import json
 import logging
 from typing import Dict, List
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 import httpx
 from dotenv import load_dotenv
 
@@ -16,6 +16,7 @@ from src.agents.extraction import extract_interactions
 from src.agents.temporal import compute_temporal_diff
 from src.agents.impact import analyze_patient_impact
 from src.agents.synthesis import synthesize_final_report
+from src.config import OLLAMA_BASE_URL, OLLAMA_API_KEY
 
 # ─── Profiling Utility ────────────────────────────────────────────────────────
 
@@ -51,9 +52,9 @@ class LLMProfiler:
 
 profiler = LLMProfiler()
 
-def patch_groq_client(client: AsyncGroq):
+def patch_llm_client(client: AsyncOpenAI):
     """
-    Monkey-patches the Groq client to record timing for every completion call.
+    Monkey-patches the OpenAI client to record timing for every completion call.
     """
     original_create = client.chat.completions.create
 
@@ -72,13 +73,12 @@ def patch_groq_client(client: AsyncGroq):
 
 async def run_profiled_pipeline():
     load_dotenv()
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        print("Error: GROQ_API_KEY not found.")
-        return
-
-    groq_client = AsyncGroq(api_key=api_key)
-    patch_groq_client(groq_client)
+    
+    llm_client = AsyncOpenAI(
+        base_url=OLLAMA_BASE_URL,
+        api_key=OLLAMA_API_KEY
+    )
+    patch_llm_client(llm_client)
     
     raw_input = "Patient prescribed Warfarin and Azithromycin in March 2010"
     prescription_date = "2010-03-15"
@@ -86,7 +86,7 @@ async def run_profiled_pipeline():
     async with httpx.AsyncClient(timeout=60.0) as http_client:
         # 1. Parsing
         profiler.set_stage("Agent 0: Parsing")
-        parser = PrescriptionParsingAgent(groq_client)
+        parser = PrescriptionParsingAgent(llm_client)
         parsed_rx = await parser.parse(raw_input)
 
         # 2. Resolution (Mostly deterministic, but timing just in case)
@@ -108,8 +108,8 @@ async def run_profiled_pipeline():
             # Extraction
             profiler.set_stage(f"Agent 3: Extraction ({source_primary})")
             past_ext, present_ext = await asyncio.gather(
-                extract_interactions(past_label, source_primary, groq_client),
-                extract_interactions(present_label, source_primary, groq_client)
+                extract_interactions(past_label, source_primary, llm_client),
+                extract_interactions(present_label, source_primary, llm_client)
             )
 
             # Temporal Diff Reasoning
@@ -117,20 +117,20 @@ async def run_profiled_pipeline():
             other_generics = [g for g in all_generics if g not in source_resolved.generic_names]
             for target in other_generics:
                 diff, reasoning = await compute_temporal_diff(
-                    past_ext, present_ext, target, groq_client, prescription_date
+                    past_ext, present_ext, target, llm_client, prescription_date
                 )
                 all_diffs.append((diff, reasoning))
 
         # 4. Impact
         profiler.set_stage("Agent 5: Impact Synthesis")
         report = await analyze_patient_impact(
-            all_diffs, resolved_drugs, prescription_date, groq_client
+            all_diffs, resolved_drugs, prescription_date, llm_client
         )
 
         # 5. Final Synthesis
         profiler.set_stage("Agent 6: Final Synthesis")
         flat_diffs = [d for d, r in all_diffs]
-        await synthesize_final_report(report, flat_diffs, groq_client)
+        await synthesize_final_report(report, flat_diffs, llm_client)
 
     profiler.print_report()
 

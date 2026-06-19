@@ -1,19 +1,15 @@
 import requests
 import os
-import dotenv
+from src.config import OLLAMA_BASE_URL, LLM_MODEL
 
-from dotenv import load_dotenv
+url = f"{OLLAMA_BASE_URL}/models"
 
-load_dotenv()
-
-api_key = os.getenv("GROQ_API_KEY")
-url = "https://api.groq.com/openai/v1/models"
-
-headers = {
-    "Authorization": f"Bearer {api_key}",
-    "Content-Type": "application/json"
-}
-
-response = requests.get(url, headers=headers)
-
-print(response.json())
+try:
+    response = requests.get(url)
+    response.raise_for_status()
+    print(f"✅ Local Ollama is reachable at {OLLAMA_BASE_URL}")
+    print(f"Models available: {[m['id'] for m in response.json().get('data', [])]}")
+    print(f"Active project model: {LLM_MODEL}")
+except Exception as e:
+    print(f"❌ Failed to reach Ollama: {e}")
+    print(f"Ensure Ollama is running and Llama 3.1 is pulled: 'ollama pull {LLM_MODEL}'")

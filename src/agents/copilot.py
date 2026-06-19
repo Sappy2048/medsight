@@ -14,10 +14,10 @@ import json
 import logging
 from datetime import datetime
 from typing import Tuple, List, Dict, Any, Optional, cast, Iterable
-from groq import AsyncGroq
-from groq.types.chat import ChatCompletionMessageParam
+from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
-from src.config import GROQ_MODEL
+from src.config import LLM_MODEL
 from src.schemas.prescription_schema import ParsedPrescription, ParsedDrug
 from src.schemas.synthesizer_schema import MedSightFinalReport
 from src.agents.prescription_parser import PrescriptionParsingAgent
@@ -28,14 +28,14 @@ logger = logging.getLogger(__name__)
 
 async def preflight_validate(
     raw_input: str,
-    groq_client: AsyncGroq,
+    llm_client: AsyncOpenAI,
 ) -> ParsedPrescription:
     """
     Mode 1: Entry gate.
     Wraps the existing PrescriptionParsingAgent to extract structured data.
     Handles errors by returning a low-confidence empty prescription.
     """
-    parser = PrescriptionParsingAgent(groq_client)
+    parser = PrescriptionParsingAgent(llm_client)
     try:
         # PrescriptionParsingAgent internally handles normalization and extraction
         # It also preserves raw_input
@@ -54,7 +54,7 @@ async def preflight_validate(
 
 async def oversee_report(
     report: MedSightFinalReport,
-    groq_client: AsyncGroq, # Included for API consistency per brief
+    llm_client: AsyncOpenAI, # Included for API consistency per brief
 ) -> Tuple[bool, str]:
     """
     Mode 2: Quality overseer.
@@ -107,7 +107,7 @@ async def answer_question(
     question: str,
     report: MedSightFinalReport,
     history: List[Dict[str, str]],
-    groq_client: AsyncGroq,
+    llm_client: AsyncOpenAI,
 ) -> str:
     """
     Mode 3: Conversational interface.
@@ -126,8 +126,8 @@ async def answer_question(
         messages.extend(cast(List[ChatCompletionMessageParam], history))
         messages.append({"role": "user", "content": question})
         
-        response = await groq_client.chat.completions.create(
-            model=GROQ_MODEL,
+        response = await llm_client.chat.completions.create(
+            model=LLM_MODEL,
             messages=messages,
             temperature=0.2,
             max_tokens=512,

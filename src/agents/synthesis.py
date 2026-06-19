@@ -16,9 +16,9 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Tuple, Optional, List, Dict, Any
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 
-from src.config import GROQ_MODEL
+from src.config import LLM_MODEL
 from src.schemas.diff_schema import DiffResult
 from src.schemas.impact_schema import PatientImpactReport
 from src.schemas.synthesizer_schema import MedSightFinalReport
@@ -64,7 +64,7 @@ OUTPUT FORMAT:
 async def synthesize_final_report(
     report: PatientImpactReport,
     diff_results: List[DiffResult],
-    groq_client: AsyncGroq
+    llm_client: AsyncOpenAI
 ) -> MedSightFinalReport:
     """
     The main entry point for the Synthesis Agent.
@@ -140,8 +140,8 @@ CLAIMS TO VERIFY:
 """
 
         try:
-            response = await groq_client.chat.completions.create(
-                model=GROQ_MODEL,
+            response = await llm_client.chat.completions.create(
+                model=LLM_MODEL,
                 messages=[
                     {"role": "system", "content": _VERIFICATION_SYSTEM_PROMPT},
                     {"role": "user", "content": user_content}

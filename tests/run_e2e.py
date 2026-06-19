@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 
 import httpx
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
 from src.agents.prescription_parser import PrescriptionParsingAgent
@@ -14,6 +14,7 @@ from src.services.fda_client import get_past_and_present_labels
 from src.agents.extraction import extract_interactions
 from src.agents.temporal import compute_temporal_diff
 from src.schemas.resolution_schema import ResolvedDrug
+from src.config import OLLAMA_BASE_URL, OLLAMA_API_KEY, LLM_MODEL
 
 # ─── Formatting Helpers ────────────────────────────────────────────────────────
 
@@ -47,12 +48,11 @@ def print_error(msg):
 
 async def run_e2e_pipeline():
     load_dotenv()
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        print_error("GROQ_API_KEY not found in environment. Please check your .env file.")
-        return
-
-    groq_client = AsyncGroq(api_key=api_key)
+    
+    llm_client = AsyncOpenAI(
+        base_url=OLLAMA_BASE_URL,
+        api_key=OLLAMA_API_KEY
+    )
     
     # Standard configuration for the demo
     # Warfarin + Azithromycin (Classic Interaction)
@@ -65,7 +65,7 @@ async def run_e2e_pipeline():
         try:
             # ── Agent 0: Parsing ──────────────────────────────────────────────
             print_step("Agent 0: Prescription Parsing")
-            parser = PrescriptionParsingAgent(groq_client)
+            parser = PrescriptionParsingAgent(llm_client)
             parsed_prescription = await parser.parse(raw_input)
             print_success(f"Extracted {len(parsed_prescription.drugs)} drugs.")
             for drug in parsed_prescription.drugs:
@@ -98,72 +98,47 @@ async def run_e2e_pipeline():
                 print(f"\n{Colors.BOLD}Analyzing interactions for: {source_primary_generic}{Colors.ENDC}")
                 
                 # Small sleep to avoid rate limiting on consecutive label extractions
-                await asyncio.sleep(2)
+                # (Ollama is local but connection pool management is still good practice)
+                await asyncio.sleep(0.5)
                 
-                try:
-                    # Fetch past and present labels
-                    past_label, present_label = await get_past_and_present_labels(
-                        source_primary_generic, prescription_date, http_client
+                # 1. Fetch labels (Past and Present)
+                past_label, present_label = await get_past_and_present_labels(
+                    source_primary_generic, 
+                    prescription_date, 
+                    http_client
+                )
+                print_success(f"Fetched historical FDA labels for {source_primary_generic}")
+                
+                # 2. Extract structured interactions from both
+                past_ext = await extract_interactions(past_label, source_primary_generic, llm_client)
+                present_ext = await extract_interactions(present_label, source_primary_generic, llm_client)
+                print_success(f"Extracted interactions from {len(past_ext.interactions)} (past) and {len(present_ext.interactions)} (present) versions.")
+
+                # 3. Compute Temporal Diffs against other generics
+                other_generics = [g for g in all_generics if g not in source_resolved.generic_names]
+                
+                for target_generic in other_generics:
+                    print_info(f"Checking diff vs {target_generic}...")
+                    diff, reasoning = await compute_temporal_diff(
+                        past_ext, 
+                        present_ext, 
+                        target_generic, 
+                        llm_client, 
+                        prescription_date
                     )
                     
-                    print_info(f"FDA Label: {past_label.spl_set_id}")
-                    print_info(f"  Past Version:    {past_label.effective_time}")
-                    print_info(f"  Present Version: {present_label.effective_time}")
+                    if diff.is_clinically_significant:
+                        print_warning(f"SIGNIFICANT CHANGE: {diff.drug_pair}")
+                        print(f"   Change: {diff.change_type} (Delta: {diff.severity_delta})")
+                        print(f"   Reason: {reasoning['clinical_reasoning']}")
+                    else:
+                        print_info(f"   No significant change for {diff.drug_pair}")
 
-                    # Extract interactions
-                    print_info("Extracting interaction records via LLM...")
-                    past_extraction, present_extraction = await asyncio.gather(
-                        extract_interactions(past_label, source_primary_generic, groq_client),
-                        extract_interactions(present_label, source_primary_generic, groq_client)
-                    )
-                    
-                    print_info(f"  Extracted {len(past_extraction.interactions)} records from past label.")
-                    print_info(f"  Extracted {len(present_extraction.interactions)} records from present label.")
-                    
-                    # Check against all other generics in the prescription
-                    other_generics = [g for g in all_generics if g not in source_resolved.generic_names]
-                    
-                    for target_generic in other_generics:
-                        print(f"\n  {Colors.UNDERLINE}Diff: {source_primary_generic} + {target_generic}{Colors.ENDC}")
-                        
-                        diff_result, reasoning = await compute_temporal_diff(
-                            past_extraction, present_extraction, target_generic, groq_client, prescription_date
-                        )
-                        
-                        # Display Results
-                        status_color = Colors.OKGREEN
-                        if diff_result.is_clinically_significant:
-                            status_color = Colors.FAIL
-                        elif diff_result.change_type != "UNCHANGED":
-                            status_color = Colors.WARNING
-                            
-                        print(f"  Change Type:    {status_color}{diff_result.change_type}{Colors.ENDC}")
-                        print(f"  Severity Delta: {status_color}{diff_result.severity_delta}{Colors.ENDC}")
-                        print(f"  Significant:    {status_color}{diff_result.is_clinically_significant}{Colors.ENDC}")
-                        
-                        if diff_result.past_severity_score is not None:
-                            print(f"  Past Score:     {diff_result.past_severity_score} ({past_label.effective_time})")
-                        if diff_result.present_severity_score is not None:
-                            print(f"  Present Score:  {diff_result.present_severity_score} (Current)")
-                            
-                        print(f"\n  {Colors.BOLD}Clinical Reasoning:{Colors.ENDC}")
-                        print(f"  {reasoning['clinical_reasoning']}")
-                        if reasoning.get('key_concern'):
-                            print(f"  {Colors.BOLD}Key Concern:{Colors.ENDC} {reasoning['key_concern']}")
-
-                except Exception as e:
-                    print_error(f"Failed to process {source_primary_generic}: {str(e)}")
-
-            print_step("PIPELINE EXECUTION COMPLETE")
-
-        except httpx.TimeoutException:
-            print_error("API Request Timed Out. Please check your network connection.")
         except Exception as e:
-            print_error(f"Pipeline crashed: {str(e)}")
+            print_error(f"Pipeline crashed: {e}")
             import traceback
             traceback.print_exc()
 
 if __name__ == "__main__":
-    # Ensure logs are not too noisy for the demo
     logging.basicConfig(level=logging.ERROR)
     asyncio.run(run_e2e_pipeline())

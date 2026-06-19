@@ -1,10 +1,13 @@
 import os
-
 from dotenv import load_dotenv
 
 load_dotenv()
 
-GROQ_API_KEY      = os.getenv("GROQ_API_KEY")
+# ─── LLM Configuration (Local Ollama via OpenAI Client) ──────────────────────
+LLM_MODEL       = os.getenv("LLM_MODEL", "llama3.1:8b")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+OLLAMA_API_KEY  = os.getenv("OLLAMA_API_KEY", "ollama")  # Dummy key required by OpenAI client
+
 SEVERITY_ONTOLOGY = {
     "contraindicated": 5,
     "avoid":           4,
@@ -15,8 +18,6 @@ SEVERITY_ONTOLOGY = {
 }
 
 MVP_DRUGS = ["Warfarin", "Azithromycin", "Metformin", "Ibuprofen", "Lisinopril"]
-
-GROQ_MODEL        = "llama-3.3-70b-versatile"
 
 QDRANT_URL        = os.getenv("QDRANT_URL")
 QDRANT_API_KEY    = os.getenv("QDRANT_API_KEY")

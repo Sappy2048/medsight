@@ -12,7 +12,7 @@ from typing import Optional, List, Dict, Any, TypedDict, Literal, Tuple
 import asyncio
 
 from langgraph.graph import StateGraph, END
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 from qdrant_client import QdrantClient
 # Assuming a mock or basic implementation for save_report as it wasn't provided
 # but requested in the brief.
@@ -61,11 +61,11 @@ class MedSightState(TypedDict):
 
 # ─── Node Functions ───────────────────────────────────────────────────────────
 
-def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: Any):
+def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: Any):
     
     async def copilot_preflight_node(state: MedSightState) -> Dict[str, Any]:
         logger.info("Node: copilot_preflight")
-        prescription = await preflight_validate(state["raw_input"], groq_client)
+        prescription = await preflight_validate(state["raw_input"], llm_client)
         return {"prescription": prescription}
 
     async def resolver_node(state: MedSightState) -> Dict[str, Any]:
@@ -131,14 +131,14 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
         for source_generic, (past_label, present_label) in state["label_history"].items():
             # Extract interactions for both versions
             # Note: extract_interactions is called per drug
-            past_ext = await extract_interactions(past_label, source_generic, groq_client)
-            present_ext = await extract_interactions(present_label, source_generic, groq_client)
+            past_ext = await extract_interactions(past_label, source_generic, llm_client)
+            present_ext = await extract_interactions(present_label, source_generic, llm_client)
             
             # Check against other generics
             other_generics = [g for g in all_generics if g not in source_generic]
             for target in other_generics:
                 diff, reasoning = await compute_temporal_diff(
-                    past_ext, present_ext, target, groq_client, prescription_date_str
+                    past_ext, present_ext, target, llm_client, prescription_date_str
                 )
                 diffs.append(diff)
                 reasoning_list.append(reasoning)
@@ -166,7 +166,7 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
             diffs=diff_tuples,
             resolved_drugs=state["resolved_drugs"],
             prescription_date=prescription_date_str,
-            groq_client=groq_client,
+            llm_client=llm_client,
             qdrant_client=qdrant_client
         )
         return {"impact_report": impact_report}
@@ -178,7 +178,7 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
         final_report = await synthesize_final_report(
             report=state["impact_report"],
             diff_results=state["diffs"],
-            groq_client=groq_client
+            llm_client=llm_client
         )
         return {"final_report": final_report}
 
@@ -186,7 +186,7 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
         logger.info("Node: copilot_overseer")
         if state["final_report"] is None:
             raise ValueError("Final report is None — cannot oversee report.")
-        should_rerun, explanation = await oversee_report(state["final_report"], groq_client)
+        should_rerun, explanation = await oversee_report(state["final_report"], llm_client)
         
         # Logic for re-run is handled in the conditional edge, 
         # but we increment loop_count here if needed.
@@ -222,8 +222,8 @@ def create_nodes(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: A
 
 # ─── Graph Construction ───────────────────────────────────────────────────────
 
-def build_medsight_graph(groq_client: AsyncGroq, qdrant_client: QdrantClient, db_pool: Any):
-    nodes = create_nodes(groq_client, qdrant_client, db_pool)
+def build_medsight_graph(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: Any):
+    nodes = create_nodes(llm_client, qdrant_client, db_pool)
     
     workflow = StateGraph(MedSightState)
     
@@ -245,7 +245,7 @@ def build_medsight_graph(groq_client: AsyncGroq, qdrant_client: QdrantClient, db
     async def should_continue(state: MedSightState):
         if state["final_report"] is None:
             return "persist"
-        should_rerun, _ = await oversee_report(state["final_report"], groq_client)
+        should_rerun, _ = await oversee_report(state["final_report"], llm_client)
         if should_rerun and state["loop_count"] < 2:
             return "resolver"
         return "persist"
@@ -267,14 +267,14 @@ def build_medsight_graph(groq_client: AsyncGroq, qdrant_client: QdrantClient, db
 
 async def run_medsight(
     raw_input: str,
-    groq_client: AsyncGroq,
+    llm_client: AsyncOpenAI,
     qdrant_client: QdrantClient,
     db_pool: Any,
 ) -> MedSightFinalReport:
     """
     Main entry point for the MedSight pipeline.
     """
-    app = build_medsight_graph(groq_client, qdrant_client, db_pool)
+    app = build_medsight_graph(llm_client, qdrant_client, db_pool)
     
     initial_state = MedSightState(
         raw_input=raw_input,
@@ -302,9 +302,9 @@ async def run_copilot_qa(
     question: str,
     report: MedSightFinalReport,
     history: List[Dict[str, str]],
-    groq_client: AsyncGroq,
+    llm_client: AsyncOpenAI,
 ) -> str:
     """
     Separate entry point for grounded Q&A mode.
     """
-    return await answer_question(question, report, history, groq_client)
+    return await answer_question(question, report, history, llm_client)

@@ -14,7 +14,7 @@ Exposed function:
         past: ExtractionResult,
         present: ExtractionResult,
         target_drug: str,
-        groq_client: AsyncGroq,
+        llm_client: AsyncOpenAI,
     ) -> DiffResult
 """
 
@@ -22,9 +22,9 @@ import json
 import logging
 from typing import Optional,Literal
 from rapidfuzz import fuzz
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 
-from src.config import GROQ_MODEL, SEVERITY_ONTOLOGY
+from src.config import LLM_MODEL, SEVERITY_ONTOLOGY
 from src.schemas.diff_schema import ExtractionResult, InteractionRecord, DiffResult
 
 logger = logging.getLogger(__name__)
@@ -236,7 +236,7 @@ Set confidence to "high" only if both versions have clear, specific recommendati
 
 async def _generate_clinical_reasoning(
     diff: DiffResult,
-    groq_client: AsyncGroq,
+    llm_client: AsyncOpenAI,
 ) -> dict:
     """
     Phase 2: LLM reasons over the verified DiffResult to produce a clinical
@@ -253,8 +253,8 @@ async def _generate_clinical_reasoning(
 
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            response = await groq_client.chat.completions.create(
-                model=GROQ_MODEL,
+            response = await llm_client.chat.completions.create(
+                model=LLM_MODEL,
                 messages=[
                     {"role": "system", "content": _REASONING_SYSTEM_PROMPT},
                     {"role": "user", "content": f"Diff to reason about:\n{diff_context}"},
@@ -301,7 +301,7 @@ async def compute_temporal_diff(
     past: Optional[ExtractionResult],        # ← NOW Optional
     present: ExtractionResult,
     target_drug: str,
-    groq_client: AsyncGroq,
+    llm_client: AsyncOpenAI,
     prescription_date: Optional[str] = None, # ← NEW: for logging/tracing
 ) -> tuple[DiffResult, dict]:
     """
@@ -313,7 +313,7 @@ async def compute_temporal_diff(
                            data_unavailable will be set on the returned DiffResult.
         present:           ExtractionResult from the latest label version.
         target_drug:       The specific interacting drug to diff (e.g. "Azithromycin").
-        groq_client:       Shared AsyncGroq client (injected, never created internally).
+        llm_client:       Shared AsyncOpenAI client (injected, never created internally).
         prescription_date: Optional ISO date string for logging/tracing only.
 
     Returns:
@@ -375,7 +375,7 @@ async def compute_temporal_diff(
         f"(delta={diff.severity_delta}, significant={diff.is_clinically_significant})"
     )
 
-    reasoning = await _generate_clinical_reasoning(diff, groq_client)
+    reasoning = await _generate_clinical_reasoning(diff, llm_client)
 
     logger.info(f"Phase 2 complete: confidence={reasoning.get('confidence')}")
 
@@ -392,7 +392,10 @@ if __name__ == "__main__":
     async def _test():
         logging.basicConfig(level=logging.INFO)
 
-        client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+        client = AsyncOpenAI(
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+            api_key=os.getenv("OLLAMA_API_KEY", "ollama")
+        )
 
         # Mock data for testing without waiting on extraction.py
         past = ExtractionResult(
@@ -430,7 +433,7 @@ if __name__ == "__main__":
         )
 
         diff, reasoning = await compute_temporal_diff(
-            past, present, target_drug="Azithromycin", groq_client=client
+            past, present, target_drug="Azithromycin", llm_client=client
         )
 
         print("\n--- DiffResult ---")
@@ -438,4 +441,4 @@ if __name__ == "__main__":
         print("\n--- Clinical Reasoning ---")
         print(json.dumps(reasoning, indent=2))
 
-    asyncio.run(_test())
+    asyncio.run(_test())))

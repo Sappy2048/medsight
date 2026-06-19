@@ -1,7 +1,7 @@
 import json
 import logging
 from pydantic import ValidationError
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 
 from src.schemas.prescription_schema import ParsedPrescription, ParsedDrug
 
@@ -75,16 +75,16 @@ class PrescriptionParsingAgent:
     """
     Agent 0 — Prescription Parser.
     Converts raw clinical text into a validated ParsedPrescription object.
-    Uses Groq + Llama 3.1 8B with JSON mode.
-    Receives the shared AsyncGroq client via constructor injection (never instantiates its own).
+    Uses Local LLM with JSON mode.
+    Receives the shared AsyncOpenAI client via constructor injection (never instantiates its own).
     """
 
     # How many times to retry on ValidationError before raising
     _MAX_RETRIES: int = 2
 
-    def __init__(self, groq_client: AsyncGroq) -> None:
+    def __init__(self, llm_client: AsyncOpenAI) -> None:
         # Shared client — injected, never created internally (guardrail compliance)
-        self._client = groq_client
+        self._client = llm_client
 
     async def parse(self, raw_text: str) -> ParsedPrescription:
         """
@@ -122,7 +122,7 @@ class PrescriptionParsingAgent:
 
     async def _call_llm(self, raw_text: str, attempt: int) -> dict:
         """
-        Sends the raw text to Groq. On retry attempts, appends the schema
+        Sends the raw text to Local LLM. On retry attempts, appends the schema
         as an additional reminder to reduce repeated hallucination patterns.
         """
         user_message = f"Extract from this prescription: {raw_text}"
@@ -136,7 +136,7 @@ class PrescriptionParsingAgent:
             )
 
         response = await self._client.chat.completions.create(
-            model="llama-3.3-70b-versatile",   # Correct Groq model ID for Llama 3.1 8B
+            model=LLM_MODEL,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user",   "content": user_message},
@@ -157,4 +157,6 @@ class PrescriptionParsingAgent:
         """
         # Enforce raw_input from the actual caller — don't trust the LLM's echo
         raw_json["raw_input"] = original_input
+        return ParsedPrescription(**raw_json)
+"] = original_input
         return ParsedPrescription(**raw_json)

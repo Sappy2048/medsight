@@ -1,12 +1,13 @@
 import asyncio
 import os
 import logging
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 from qdrant_client import QdrantClient
 from dotenv import load_dotenv
 
 from src.agents.graph import run_medsight, run_copilot_qa
 from src.schemas.synthesizer_schema import MedSightFinalReport
+from src.config import OLLAMA_BASE_URL, OLLAMA_API_KEY
 
 async def test_full_agentic_flow():
     load_dotenv()
@@ -14,12 +15,10 @@ async def test_full_agentic_flow():
     logger = logging.getLogger("test_flow")
 
     # 1. Setup Clients
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if not groq_api_key:
-        logger.error("GROQ_API_KEY not found")
-        return
-
-    groq_client = AsyncGroq(api_key=groq_api_key)
+    llm_client = AsyncOpenAI(
+        base_url=OLLAMA_BASE_URL,
+        api_key=OLLAMA_API_KEY
+    )
     
     # Setup Qdrant
     from src.config import QDRANT_URL, QDRANT_API_KEY
@@ -39,7 +38,7 @@ async def test_full_agentic_flow():
         # 3. Run Pipeline
         report = await run_medsight(
             raw_input=raw_input,
-            groq_client=groq_client,
+            llm_client=llm_client,
             qdrant_client=qdrant_client,
             db_pool=db_pool
         )
@@ -64,7 +63,7 @@ async def test_full_agentic_flow():
             question=question,
             report=report,
             history=history,
-            groq_client=groq_client
+            llm_client=llm_client
         )
         
         logger.info(f"Q: {question}")

@@ -21,7 +21,7 @@ Exposed function:
     async def extract_interactions(
         label:       FDALabelVersion,
         source_drug: str,
-        groq_client: AsyncGroq,
+        llm_client: AsyncOpenAI,
     ) -> ExtractionResult
 """
 
@@ -30,9 +30,9 @@ import logging
 from typing import Optional, Literal, cast
 import asyncio
 
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 
-from src.config import GROQ_MODEL, SEVERITY_ONTOLOGY
+from src.config import LLM_MODEL, SEVERITY_ONTOLOGY
 from src.schemas.fda_schema import FDALabelVersion
 from src.schemas.diff_schema import ExtractionResult, InteractionRecord
 
@@ -129,7 +129,7 @@ async def _extract_section(
     section_name: InteractionSection,
     section_text: str,
     source_drug: str,
-    groq_client: AsyncGroq,
+    llm_client: AsyncOpenAI,
 ) -> list[dict]:
     """
     Single LLM call to extract all drug interactions from one label section.
@@ -154,8 +154,8 @@ async def _extract_section(
 
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            response = await groq_client.chat.completions.create(
-                model=GROQ_MODEL,
+            response = await llm_client.chat.completions.create(
+                model=LLM_MODEL,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user",   "content": user_message},
@@ -256,7 +256,7 @@ def _assemble_records(
 async def extract_interactions(
     label: FDALabelVersion,
     source_drug: str,
-    groq_client: AsyncGroq,
+    llm_client: AsyncOpenAI,
 ) -> ExtractionResult:
     """
     Main entry point for the Extraction Agent.
@@ -265,7 +265,7 @@ async def extract_interactions(
         label:       FDALabelVersion from fda_client — contains spl_id,
                      effective_time, and the 4 parsed label sections.
         source_drug: The drug whose label this is (e.g. "Warfarin").
-        groq_client: Shared AsyncGroq client — injected, never created here.
+        llm_client: Shared AsyncOpenAI client — injected, never created here.
 
     Returns:
         ExtractionResult with all InteractionRecord objects found across
@@ -289,7 +289,7 @@ async def extract_interactions(
                 section_name=section_name,
                 section_text=section_text,
                 source_drug=source_drug,
-                groq_client=groq_client,
+                llm_client=llm_client,
             )
         )
         section_tasks.append((section_name, task))
@@ -329,3 +329,4 @@ async def extract_interactions(
         spl_id=label.spl_id,
         interactions=all_records,
     )
+ )

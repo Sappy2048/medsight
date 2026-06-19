@@ -19,10 +19,10 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Literal, Tuple
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 from qdrant_client import QdrantClient
 
-from src.config import GROQ_MODEL, QDRANT_COLLECTION
+from src.config import LLM_MODEL, QDRANT_COLLECTION
 from src.schemas.diff_schema import DiffResult
 from src.schemas.resolution_schema import ResolvedDrug
 from src.schemas.impact_schema import DrugPairAlert, PatientImpactReport
@@ -129,15 +129,15 @@ OUTPUT FORMAT (strict JSON):
 
 async def _generate_synthesis(
     report_data: dict,
-    groq_client: AsyncGroq,
+    llm_client: AsyncOpenAI,
     compounding_notes: Optional[list[str]] = None
 ) -> Tuple[str, str]:
     """
     LLM phase to generate narrative summary and action recommendation.
     """
     try:
-        response = await groq_client.chat.completions.create(
-            model=GROQ_MODEL,
+        response = await llm_client.chat.completions.create(
+            model=LLM_MODEL,
             messages=[
                 {"role": "system", "content": _SYNTHESIS_SYSTEM_PROMPT},
                 {"role": "user", "content": json.dumps(report_data, indent=2)},
@@ -148,7 +148,7 @@ async def _generate_synthesis(
         )
         response_text = response.choices[0].message.content
         if not response_text:
-            raise ValueError("Groq returned an empty response")
+            raise ValueError("LLM returned an empty response")
             
         content = json.loads(response_text)
         return content.get("summary", ""), content.get("recommended_action", "")
@@ -170,7 +170,7 @@ async def analyze_patient_impact(
     diffs:             list[Tuple[DiffResult, dict]],
     resolved_drugs:    list[ResolvedDrug],
     prescription_date: str,
-    groq_client:       AsyncGroq,
+    llm_client:       AsyncOpenAI,
     qdrant_client:     Optional[QdrantClient] = None,
 ) -> PatientImpactReport:
     """
@@ -259,7 +259,7 @@ async def analyze_patient_impact(
         "total_evaluated": len(diffs)
     }
     
-    summary, recommended_action = await _generate_synthesis(report_context, groq_client, compounding_notes)
+    summary, recommended_action = await _generate_synthesis(report_context, llm_client, compounding_notes)
 
     return PatientImpactReport(
         prescription_date=prescription_date,
