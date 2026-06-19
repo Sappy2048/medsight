@@ -78,6 +78,9 @@ class EvaluateRequest(BaseModel):
 class MedSightSuccessResponse(BaseModel):
     status: Literal["success"]
     report: MedSightFinalReport
+    resolved_drugs: Optional[list] = None
+    diffs: Optional[list] = None
+    extraction_results: Optional[dict] = None
 
 class MedSightClarificationResponse(BaseModel):
     status: Literal["clarification_required"]

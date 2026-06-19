@@ -73,20 +73,22 @@
                     :disabled="pipelineRunning"
                     rows="4"
                     class="w-full bg-clinical-bg border border-clinical-border rounded-lg p-4 text-clinical-text placeholder-clinical-text-secondary/50 focus:outline-none focus:border-clinical-accent resize-none"
-                    placeholder="Enter prescription exactly as written...&#10;e.g. Tab Augmentin 625 BD + Dolo 650 TDS for 5 days, prescribed 2021-03-15"></textarea>
+                    placeholder="Enter prescription exactly as written...&#10;e.g. Tab Augmentin 625 BD + Dolo 650 TDS for 5 days, prescribed 2021-03-15"
+                    required></textarea>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm text-clinical-text-secondary mb-2">Prescription Date (if not in text)</label>
+                    <label class="block text-sm text-clinical-text-secondary mb-2">Prescription Date</label>
                     <input 
                         type="date"
                         x-model="prescriptionDate"
                         :disabled="pipelineRunning"
-                        class="w-full bg-clinical-bg border border-clinical-border rounded-lg px-4 py-3 text-clinical-text focus:outline-none focus:border-clinical-accent">
+                        class="w-full bg-clinical-bg border border-clinical-border rounded-lg px-4 py-3 text-clinical-text focus:outline-none focus:border-clinical-accent"
+                        required>
                 </div>
                 <div>
-                    <label class="block text-sm text-clinical-text-secondary mb-2">Patient Age (optional)</label>
+                    <label class="block text-sm text-clinical-text-secondary mb-2">Patient Age</label>
                     <input 
                         type="number"
                         x-model="patientAge"
@@ -94,14 +96,15 @@
                         min="0"
                         max="150"
                         class="w-full bg-clinical-bg border border-clinical-border rounded-lg px-4 py-3 text-clinical-text focus:outline-none focus:border-clinical-accent"
-                        placeholder="e.g. 45">
+                        placeholder="e.g. 45"
+                        required>
                 </div>
             </div>
 
             <div class="flex gap-3 pt-2">
                 <button 
                     type="submit"
-                    :disabled="pipelineRunning || !prescriptionText.trim()"
+                    :disabled="pipelineRunning || !prescriptionText.trim() || !prescriptionDate || !patientAge"
                     class="px-6 py-3 bg-clinical-accent hover:bg-indigo-600 disabled:bg-clinical-border disabled:cursor-not-allowed rounded-lg font-medium transition-colors flex items-center gap-2">
                     <span x-show="!pipelineRunning">Analyse Prescription</span>
                     <span x-show="pipelineRunning">Analysing...</span>
@@ -138,7 +141,8 @@
                              'bg-clinical-border text-clinical-text-secondary': step.state === 'pending',
                              'bg-clinical-info text-white pulse-active': step.state === 'active',
                              'bg-clinical-safe text-white': step.state === 'complete',
-                             'bg-clinical-critical text-white': step.state === 'error'
+                             'bg-clinical-critical text-white': step.state === 'error',
+                             'bg-clinical-warning text-black': step.state === 'clarification'
                          }">
                         <!-- Pending icon -->
                         <svg x-show="step.state === 'pending'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -157,6 +161,10 @@
                         <svg x-show="step.state === 'error'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
+                        <!-- Clarification "?" -->
+                        <svg x-show="step.state === 'clarification'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
                     </div>
                     <!-- Label -->
                     <span class="text-xs font-medium transition-colors" 
@@ -164,7 +172,8 @@
                               'text-clinical-text-secondary': step.state === 'pending',
                               'text-clinical-info font-bold': step.state === 'active',
                               'text-clinical-safe': step.state === 'complete',
-                              'text-clinical-critical': step.state === 'error'
+                              'text-clinical-critical': step.state === 'error',
+                              'text-clinical-warning font-bold': step.state === 'clarification'
                           }"
                           x-text="step.label"></span>
                 </div>
@@ -180,7 +189,8 @@
                              'bg-clinical-border text-clinical-text-secondary': step.state === 'pending',
                              'bg-clinical-info text-white pulse-active': step.state === 'active',
                              'bg-clinical-safe text-white': step.state === 'complete',
-                             'bg-clinical-critical text-white': step.state === 'error'
+                             'bg-clinical-critical text-white': step.state === 'error',
+                             'bg-clinical-warning text-black': step.state === 'clarification'
                          }">
                         <svg x-show="step.state === 'pending'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <circle cx="12" cy="12" r="10" stroke-width="2"></circle>
@@ -195,13 +205,17 @@
                         <svg x-show="step.state === 'error'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
+                        <svg x-show="step.state === 'clarification'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
                     </div>
                     <span class="text-sm font-medium"
                           :class="{
                               'text-clinical-text-secondary': step.state === 'pending',
                               'text-clinical-info font-bold': step.state === 'active',
                               'text-clinical-safe': step.state === 'complete',
-                              'text-clinical-critical': step.state === 'error'
+                              'text-clinical-critical': step.state === 'error',
+                              'text-clinical-warning font-bold': step.state === 'clarification'
                           }"
                           x-text="step.label"></span>
                 </div>
@@ -544,6 +558,9 @@
             },
             
             get canContinue() {
+                if (this.clarification && !this.clarification.options?.length) {
+                    return this.clarificationText.trim().length > 0;
+                }
                 if (!this.clarificationResponse) return false;
                 if (this.clarificationResponse === '__other__') {
                     return this.clarificationText.trim().length > 0;
@@ -552,7 +569,7 @@
             },
             
             startAnalysis() {
-                if (!this.prescriptionText.trim()) return;
+                if (!this.prescriptionText.trim() || !this.prescriptionDate || !this.patientAge) return;
                 
                 this.pipelineRunning = true;
                 this.showPipeline = true;
@@ -573,91 +590,194 @@
                     { label: "Report Ready", state: "pending" }
                 ];
                 
-                // Simulate pipeline progress (1.2s per step)
-                let currentStep = 0;
+                // Current step for visual transition
+                let visualStep = 0;
+                this.pipelineSteps[0].state = 'active';
                 
-                const advanceStep = () => {
-                    if (currentStep > 0) {
-                        this.pipelineSteps[currentStep - 1].state = 'complete';
+                // Animate progress up to step 4 (Computing Temporal Diff) slowly while fetching
+                const progressInterval = setInterval(() => {
+                    if (visualStep < 4) {
+                        this.pipelineSteps[visualStep].state = 'complete';
+                        visualStep++;
+                        this.pipelineSteps[visualStep].state = 'active';
                     }
-                    
-                    if (currentStep < this.pipelineSteps.length) {
-                        this.pipelineSteps[currentStep].state = 'active';
-                        currentStep++;
+                }, 1500);
+
+                // Inject prescription date and patient age into the query sent to the LLM
+                const formattedQuery = `${this.prescriptionText.trim()}\nPrescription Date: ${this.prescriptionDate}\nPatient Age: ${this.patientAge}`;
+
+                // Make API request
+                fetch('/evaluate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        query: formattedQuery,
+                        prescription_date: this.prescriptionDate,
+                        patient_age: parseInt(this.patientAge)
+                    })
+                })
+                .then(res => {
+                    clearInterval(progressInterval);
+                    if (!res.ok) {
+                        return res.json().then(err => { throw new Error(err.detail || 'Analysis failed'); });
+                    }
+                    return res.json();
+                })
+                .then(data => {
+                    if (data.status === 'clarification_required') {
+                        // Graph paused, need user input
+                        // Map active step to paused/clarification state
+                        this.pipelineSteps[visualStep].state = 'clarification';
+                        this.pipelineSteps[visualStep].label = `${this.pipelineSteps[visualStep].label} — Awaiting Clarification`;
                         
-                        // Simulate clarification at step 2 (demo mode - 50% chance)
-                        if (currentStep === 2 && Math.random() > 0.5) {
-                            setTimeout(() => {
-                                this.showClarification();
-                            }, 1200);
-                            return;
-                        }
+                        this.clarification = {
+                            paused_at_step: visualStep + 1,
+                            paused_at_step_label: this.pipelineSteps[visualStep].label.replace(' — Awaiting Clarification', ''),
+                            question: data.message,
+                            options: []
+                        };
+                        this.pipelineRunning = false;
+                    } else if (data.status === 'success') {
+                        // Fast-forward all steps to complete
+                        this.pipelineSteps.forEach(step => {
+                            step.state = 'complete';
+                        });
                         
-                        setTimeout(advanceStep, 1200);
-                    } else {
-                        // Pipeline complete
-                        this.pipelineSteps[this.pipelineSteps.length - 1].state = 'complete';
+                        // Parse and load actual results
+                        this.loadActualResults(data);
                         this.pipelineRunning = false;
                         this.showReset = true;
-                        this.loadMockResults();
                     }
-                };
-                
-                advanceStep();
-            },
-            
-            showClarification() {
-                this.clarification = {
-                    paused_at_step: 2,
-                    paused_at_step_label: "Resolving Drug Names",
-                    question: "We found 2 possible matches for 'Clavam' in the Indian drug dataset. Which did you intend?",
-                    options: [
-                        { label: "Clavam 625", detail: "Amoxicillin 500mg + Clavulanic Acid 125mg" },
-                        { label: "Clavam 1000", detail: "Amoxicillin 875mg + Clavulanic Acid 125mg" }
-                    ]
-                };
-                this.pipelineRunning = false;
-                this.pipelineSteps[1].state = 'pending';
+                })
+                .catch(err => {
+                    clearInterval(progressInterval);
+                    this.pipelineSteps[visualStep].state = 'error';
+                    this.pipelineError = err.message || 'An error occurred during evaluation.';
+                    this.pipelineRunning = false;
+                    this.showReset = true;
+                });
             },
             
             continueAnalysis() {
-                // Hide clarification and resume pipeline
+                let clarificationPart = '';
+                if (this.clarification && !this.clarification.options?.length) {
+                    clarificationPart = this.clarificationText.trim();
+                } else if (this.clarificationResponse === '__other__') {
+                    clarificationPart = this.clarificationText.trim();
+                } else {
+                    clarificationPart = this.clarificationResponse;
+                }
+                
+                if (!clarificationPart) return;
+                
+                // Append clarification details cleanly to prescription text
+                this.prescriptionText = `${this.prescriptionText}\nClarification: ${clarificationPart}`;
+                
+                // Hide clarification card
                 this.clarification = null;
-                this.pipelineRunning = true;
-                this.pipelineSteps[1].state = 'active';
+                this.clarificationResponse = '';
+                this.clarificationText = '';
                 
-                // Continue from step 3
-                let currentStep = 2;
-                
-                const advanceStep = () => {
-                    if (currentStep > 2) {
-                        this.pipelineSteps[currentStep - 1].state = 'complete';
-                    }
-                    
-                    if (currentStep < this.pipelineSteps.length) {
-                        this.pipelineSteps[currentStep].state = 'active';
-                        currentStep++;
-                        setTimeout(advanceStep, 1200);
-                    } else {
-                        this.pipelineSteps[this.pipelineSteps.length - 1].state = 'complete';
-                        this.pipelineRunning = false;
-                        this.showReset = true;
-                        this.loadMockResults();
-                    }
-                };
-                
-                setTimeout(advanceStep, 1200);
+                // Re-run startAnalysis with updated prescription text
+                this.startAnalysis();
             },
             
-            loadMockResults() {
-                this.temporalDiffs = this.mockData.temporal_diffs;
-                this.drugInteractions = this.mockData.drug_interactions;
-                this.mockData.prescription_date = this.prescriptionDate || "2021-03-15";
+            loadActualResults(data) {
+                const resolved = data.resolved_drugs || [];
+                
+                // Set the dates for Section 3 header
+                this.mockData.prescription_date = this.prescriptionDate;
                 this.mockData.today = new Date().toISOString().split('T')[0];
+
+                if (data.diffs && data.diffs.length > 0) {
+                    this.temporalDiffs = data.diffs
+                        .filter(diff => diff.change_type !== 'UNCHANGED' && diff.is_clinically_significant)
+                        .map(diff => {
+                            let mappedChangeType = 'LABEL_LANGUAGE_CHANGE';
+                            if (diff.change_type === 'ADDED') {
+                                if (diff.present_severity_score === 5) {
+                                    mappedChangeType = 'NEW_CONTRAINDICATION';
+                                } else if (diff.present_severity_score === 4) {
+                                    mappedChangeType = 'NEW_BLACK_BOX';
+                                } else {
+                                    mappedChangeType = 'NEW_INTERACTION';
+                                }
+                            } else if (diff.change_type === 'STRENGTHENED') {
+                                mappedChangeType = 'STRENGTHENED_WARNING';
+                            }
+                            
+                            const brandPair = mapToBrandName(diff.drug_pair, resolved);
+                            
+                            return {
+                                drug_pair: brandPair,
+                                risk_emerged_date: diff.present_version_date,
+                                changes: [
+                                    {
+                                        section: 'drug_interactions',
+                                        change_type: mappedChangeType,
+                                        text_before: diff.past_recommendation,
+                                        text_after: diff.present_recommendation,
+                                        then_version: diff.past_spl_id ? `SPL ${diff.past_spl_id.slice(0, 8)}` : 'v1.0',
+                                        now_version: diff.present_spl_id ? `SPL ${diff.present_spl_id.slice(0, 8)}` : 'v2.0'
+                                    }
+                                ]
+                            };
+                        });
+                } else {
+                    this.temporalDiffs = [];
+                }
+
+                // Format the drug interactions list (Section 4)
+                if (data.extraction_results && resolved.length > 0) {
+                    this.drugInteractions = resolved.map(drug => {
+                        const interactionsMap = {};
+                        
+                        drug.generic_names.forEach(genericName => {
+                            const ext = data.extraction_results[genericName];
+                            if (ext && ext.present && ext.present.interactions) {
+                                ext.present.interactions.forEach(inter => {
+                                    const target = inter.target_drug;
+                                    
+                                    let severityLabel = 'Moderate';
+                                    if (inter.severity_score >= 5) {
+                                        severityLabel = 'Contraindicated';
+                                    } else if (inter.severity_score >= 4 || inter.severity_score === 3) {
+                                        severityLabel = 'Major';
+                                    } else if (inter.severity_score === 2) {
+                                        severityLabel = 'Moderate';
+                                    } else if (inter.severity_score === 1) {
+                                        severityLabel = 'Minor';
+                                    }
+                                    
+                                    interactionsMap[target] = {
+                                        interacts_with: target,
+                                        severity: severityLabel,
+                                        description: inter.recommendation_text,
+                                        fda_section: inter.section || 'drug_interactions'
+                                    };
+                                });
+                            }
+                        });
+                        
+                        return {
+                            brand_name: drug.raw_prescription_input,
+                            generics: drug.generic_names,
+                            interactions: Object.values(interactionsMap)
+                        };
+                    });
+                } else {
+                    this.drugInteractions = [];
+                }
+                
                 this.showReport = true;
             },
             
             resetAll() {
+                this.prescriptionText = '';
+                this.prescriptionDate = '';
+                this.patientAge = '';
                 this.pipelineRunning = false;
                 this.showPipeline = false;
                 this.showReport = false;
@@ -678,6 +798,21 @@
                 ];
             }
         }
+    }
+
+    function mapToBrandName(genericPairStr, resolvedDrugs) {
+        if (!resolvedDrugs) return genericPairStr.split(/\s*\+\s*/);
+        const parts = genericPairStr.split(/\s*\+\s*/);
+        return parts.map(part => {
+            const lowerPart = part.toLowerCase();
+            const matched = resolvedDrugs.find(drug => 
+                drug.generic_names.some(gen => {
+                    const lowerGen = gen.toLowerCase();
+                    return lowerGen.includes(lowerPart) || lowerPart.includes(lowerGen);
+                })
+            );
+            return matched ? matched.raw_prescription_input : part;
+        });
     }
 </script>
 
