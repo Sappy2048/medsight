@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MedSight — Drug Safety Intelligence System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'clinical-bg': '#0f1117',
+                        'clinical-surface': '#1a1d27',
+                        'clinical-border': '#2a2d3e',
+                        'clinical-text': '#e8eaf0',
+                        'clinical-text-secondary': '#8b8fa8',
+                        'clinical-accent': '#6366f1',
+                        'clinical-critical': '#ef4444',
+                        'clinical-warning': '#f59e0b',
+                        'clinical-safe': '#22c55e',
+                        'clinical-info': '#3b82f6',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+        }
+        .pulse-active {
+            animation: pulse-ring 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+    </style>
+</head>
+<body class="bg-clinical-bg text-clinical-text min-h-screen font-sans">
+
+<div x-data="medsightApp()" x-init="init()" class="max-w-6xl mx-auto p-4 md:p-6 space-y-6">
+
+    <!-- Header -->
+    <header class="mb-8">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 bg-clinical-accent rounded-lg flex items-center justify-center">
+                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path>
+                </svg>
+            </div>
+            <div>
+                <h1 class="text-2xl font-bold text-clinical-text">MedSight</h1>
+                <p class="text-sm text-clinical-text-secondary">Drug Safety Intelligence System</p>
+            </div>
+        </div>
+    </header>
+
+    <!-- Section 1: Prescription Input Area -->
+    <section class="bg-clinical-surface border border-clinical-border rounded-xl p-6">
+        <h2 class="text-lg font-semibold mb-4 text-clinical-text flex items-center gap-2">
+            <svg class="w-5 h-5 text-clinical-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+            </svg>
+            Prescription Input
+        </h2>
+        
+        <form @submit.prevent="startAnalysis()" class="space-y-4">
+            <div>
+                <label class="block text-sm text-clinical-text-secondary mb-2">Prescription Text</label>
+                <textarea 
+                    x-model="prescriptionText"
+                    :disabled="pipelineRunning"
+                    rows="4"
+                    class="w-full bg-clinical-bg border border-clinical-border rounded-lg p-4 text-clinical-text placeholder-clinical-text-secondary/50 focus:outline-none focus:border-clinical-accent resize-none"
+                    placeholder="Enter prescription exactly as written...&#10;e.g. Tab Augmentin 625 BD + Dolo 650 TDS for 5 days, prescribed 2021-03-15"></textarea>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm text-clinical-text-secondary mb-2">Prescription Date (if not in text)</label>
+                    <input 
+                        type="date"
+                        x-model="prescriptionDate"
+                        :disabled="pipelineRunning"
+                        class="w-full bg-clinical-bg border border-clinical-border rounded-lg px-4 py-3 text-clinical-text focus:outline-none focus:border-clinical-accent">
+                </div>
+                <div>
+                    <label class="block text-sm text-clinical-text-secondary mb-2">Patient Age (optional)</label>
+                    <input 
+                        type="number"
+                        x-model="patientAge"
+                        :disabled="pipelineRunning"
+                        min="0"
+                        max="150"
+                        class="w-full bg-clinical-bg border border-clinical-border rounded-lg px-4 py-3 text-clinical-text focus:outline-none focus:border-clinical-accent"
+                        placeholder="e.g. 45">
+                </div>
+            </div>
+
+            <div class="flex gap-3 pt-2">
+                <button 
+                    type="submit"
+                    :disabled="pipelineRunning || !prescriptionText.trim()"
+                    class="px-6 py-3 bg-clinical-accent hover:bg-indigo-600 disabled:bg-clinical-border disabled:cursor-not-allowed rounded-lg font-medium transition-colors flex items-center gap-2">
+                    <span x-show="!pipelineRunning">Analyse Prescription</span>
+                    <span x-show="pipelineRunning">Analysing...</span>
+                    <svg x-show="pipelineRunning" class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                </button>
+                <button 
+                    type="button"
+                    @click="resetAll()"
+                    x-show="showReset"
+                    class="px-6 py-3 border border-clinical-border hover:bg-clinical-bg rounded-lg font-medium transition-colors">
+                    Reset
+                </button>
+            </div>
+        </form>
+    </section>
+
+    <!-- Section 2: Pipeline Progress Tracker -->
+    <section x-show="showPipeline" x-transition class="bg-clinical-surface border border-clinical-border rounded-xl p-6">
+        <h2 class="text-lg font-semibold mb-6 text-clinical-text">Analysis Pipeline</h2>
+        
+        <!-- Horizontal stepper (desktop) -->
+        <div class="hidden md:flex justify-between items-start relative">
+            <!-- Progress line -->
+            <div class="absolute top-6 left-0 right-0 h-0.5 bg-clinical-border -z-10"></div>
+            
+            <template x-for="(step, index) in pipelineSteps" :key="index">
+                <div class="flex flex-col items-center text-center w-32">
+                    <!-- Icon -->
+                    <div class="w-12 h-12 rounded-full flex items-center justify-center mb-3 transition-all"
+                         :class="{
+                             'bg-clinical-border text-clinical-text-secondary': step.state === 'pending',
+                             'bg-clinical-info text-white pulse-active': step.state === 'active',
+                             'bg-clinical-safe text-white': step.state === 'complete',
+                             'bg-clinical-critical text-white': step.state === 'error'
+                         }">
+                        <!-- Pending icon -->
+                        <svg x-show="step.state === 'pending'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10" stroke-width="2"></circle>
+                        </svg>
+                        <!-- Active spinner -->
+                        <svg x-show="step.state === 'active'" class="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <!-- Complete check -->
+                        <svg x-show="step.state === 'complete'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <!-- Error X -->
+                        <svg x-show="step.state === 'error'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </div>
+                    <!-- Label -->
+                    <span class="text-xs font-medium transition-colors" 
+                          :class="{
+                              'text-clinical-text-secondary': step.state === 'pending',
+                              'text-clinical-info font-bold': step.state === 'active',
+                              'text-clinical-safe': step.state === 'complete',
+                              'text-clinical-critical': step.state === 'error'
+                          }"
+                          x-text="step.label"></span>
+                </div>
+            </template>
+        </div>
+
+        <!-- Vertical stepper (mobile) -->
+        <div class="md:hidden space-y-4">
+            <template x-for="(step, index) in pipelineSteps" :key="index">
+                <div class="flex items-center gap-4">
+                    <div class="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+                         :class="{
+                             'bg-clinical-border text-clinical-text-secondary': step.state === 'pending',
+                             'bg-clinical-info text-white pulse-active': step.state === 'active',
+                             'bg-clinical-safe text-white': step.state === 'complete',
+                             'bg-clinical-critical text-white': step.state === 'error'
+                         }">
+                        <svg x-show="step.state === 'pending'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10" stroke-width="2"></circle>
+                        </svg>
+                        <svg x-show="step.state === 'active'" class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <svg x-show="step.state === 'complete'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <svg x-show="step.state === 'error'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </div>
+                    <span class="text-sm font-medium"
+                          :class="{
+                              'text-clinical-text-secondary': step.state === 'pending',
+                              'text-clinical-info font-bold': step.state === 'active',
+                              'text-clinical-safe': step.state === 'complete',
+                              'text-clinical-critical': step.state === 'error'
+                          }"
+                          x-text="step.label"></span>
+                </div>
+            </template>
+        </div>
+
+        <!-- Error message -->
+        <div x-show="pipelineError" x-transition class="mt-6 p-4 bg-clinical-critical/10 border border-clinical-critical/30 rounded-lg">
+            <p class="text-clinical-critical text-sm" x-text="pipelineError"></p>
+        </div>
+    </section>
+
+    <!-- Section 2.5: Clarification Panel -->
+    <section x-show="clarification" x-transition class="bg-clinical-surface border-2 border-clinical-warning/50 rounded-xl p-6">
+        <div class="flex items-center gap-3 mb-4">
+            <div class="px-3 py-1 bg-clinical-warning text-black text-sm font-bold rounded-full">
+                Clarification Required
+            </div>
+        </div>
+        
+        <p class="text-clinical-text-secondary mb-6">
+            The pipeline paused at <span class="text-clinical-warning font-medium" x-text="clarification?.paused_at_step_label || 'Resolving Drug Names'"></span> and needs your input to proceed accurately.
+        </p>
+
+        <div class="mb-6">
+            <p class="text-clinical-text mb-4" x-text="clarification?.question || 'We found 2 possible matches for Clavam in the Indian drug dataset. Which did you intend?'"></p>
+            
+            <!-- Radio options -->
+            <div x-show="clarification?.options?.length > 0" class="space-y-3 mb-4">
+                <template x-for="(option, idx) in clarification?.options" :key="idx">
+                    <label class="flex items-start gap-3 p-3 bg-clinical-bg rounded-lg cursor-pointer hover:bg-clinical-border/50 transition-colors">
+                        <input type="radio" name="clarification" :value="option.label" x-model="clarificationResponse" class="mt-1 text-clinical-accent focus:ring-clinical-accent">
+                        <div>
+                            <div class="font-medium text-clinical-text" x-text="option.label"></div>
+                            <div class="text-sm text-clinical-text-secondary" x-text="option.detail"></div>
+                        </div>
+                    </label>
+                </template>
+                <!-- None of the above option -->
+                <label class="flex items-start gap-3 p-3 bg-clinical-bg rounded-lg cursor-pointer hover:bg-clinical-border/50 transition-colors">
+                    <input type="radio" name="clarification" value="__other__" x-model="clarificationResponse" class="mt-1 text-clinical-accent focus:ring-clinical-accent">
+                    <div class="font-medium text-clinical-text">None of the above — let me specify</div>
+                </label>
+            </div>
+
+            <!-- Free text input (shown when "None of the above" selected or no options) -->
+            <div x-show="!clarification?.options?.length || clarificationResponse === '__other__'" class="mt-4">
+                <input 
+                    type="text"
+                    x-model="clarificationText"
+                    class="w-full bg-clinical-bg border border-clinical-border rounded-lg px-4 py-3 text-clinical-text focus:outline-none focus:border-clinical-accent"
+                    placeholder="Type the correct drug name or clarification here...">
+            </div>
+        </div>
+
+        <div class="flex gap-3">
+            <button 
+                @click="continueAnalysis()"
+                :disabled="!canContinue"
+                class="px-6 py-3 bg-clinical-warning hover:bg-amber-600 disabled:bg-clinical-border disabled:cursor-not-allowed text-black rounded-lg font-medium transition-colors">
+                Continue Analysis
+            </button>
+            <button 
+                @click="resetAll()"
+                class="px-6 py-3 border border-clinical-border hover:bg-clinical-bg rounded-lg font-medium transition-colors">
+                Restart from scratch
+            </button>
+        </div>
+    </section>
+
+    <!-- Section 3: Risk Report Panel -->
+    <section x-show="showReport" x-transition class="space-y-6">
+        <div class="bg-clinical-surface border border-clinical-border rounded-xl p-6">
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                <h2 class="text-lg font-semibold text-clinical-text flex items-center gap-2">
+                    <svg class="w-5 h-5 text-clinical-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    </svg>
+                    Temporal Risk Report
+                </h2>
+                <div class="px-4 py-2 bg-clinical-bg border border-clinical-border rounded-full text-sm text-clinical-text-secondary">
+                    Analysed: <span class="text-clinical-text font-medium" x-text="mockData.prescription_date"></span> → <span class="text-clinical-text font-medium" x-text="mockData.today"></span>
+                </div>
+            </div>
+
+            <!-- No risks detected -->
+            <div x-show="!temporalDiffs.length" class="p-6 bg-clinical-safe/10 border border-clinical-safe/30 rounded-lg">
+                <div class="flex items-center gap-3 text-clinical-safe">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                    </svg>
+                    <span class="font-medium">No label changes affecting this combination were detected between <span x-text="mockData.prescription_date"></span> and today.</span>
+                </div>
+            </div>
+
+            <!-- Risk cards -->
+            <div class="space-y-4">
+                <template x-for="(diff, index) in temporalDiffs" :key="index">
+                    <div class="bg-clinical-bg border border-clinical-border rounded-lg p-5">
+                        <!-- Header -->
+                        <div class="flex flex-wrap items-center gap-3 mb-3">
+                            <h3 class="text-lg font-semibold text-clinical-text" x-text="diff.drug_pair.join(' + ')"></h3>
+                            <span class="text-sm text-clinical-text-secondary" x-text="'Risk emerged on ' + diff.risk_emerged_date"></span>
+                        </div>
+
+                        <!-- Changes -->
+                        <div class="space-y-3">
+                            <template x-for="(change, cidx) in diff.changes" :key="cidx">
+                                <div class="border-l-4 pl-4 py-2" :class="{
+                                    'border-clinical-critical': change.change_type === 'NEW_BLACK_BOX' || change.change_type === 'NEW_CONTRAINDICATION',
+                                    'border-clinical-warning': change.change_type === 'STRENGTHENED_WARNING' || change.change_type === 'NEW_INTERACTION',
+                                    'border-clinical-text-secondary': change.change_type === 'LABEL_LANGUAGE_CHANGE'
+                                }">
+                                    <!-- Severity badge -->
+                                    <div class="mb-2">
+                                        <span class="inline-block px-3 py-1 text-xs font-bold rounded-full"
+                                              :class="{
+                                                  'bg-clinical-critical text-white': change.change_type === 'NEW_BLACK_BOX' || change.change_type === 'NEW_CONTRAINDICATION',
+                                                  'bg-clinical-warning text-black': change.change_type === 'STRENGTHENED_WARNING' || change.change_type === 'NEW_INTERACTION',
+                                                  'bg-clinical-text-secondary text-clinical-bg': change.change_type === 'LABEL_LANGUAGE_CHANGE'
+                                              }"
+                                              x-text="change.change_type.replace(/_/g, ' ')"></span>
+                                    </div>
+                                    
+                                    <!-- Section label -->
+                                    <div class="text-sm text-clinical-text-secondary mb-2" x-text="change.section"></div>
+
+                                    <!-- Collapsible diff -->
+                                    <details class="group">
+                                        <summary class="cursor-pointer text-sm text-clinical-accent hover:text-indigo-400 font-medium flex items-center gap-2">
+                                            <span>Show label change</span>
+                                            <svg class="w-4 h-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                            </svg>
+                                        </summary>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                                            <div class="bg-red-900/20 border border-red-900/30 rounded-lg p-4">
+                                                <div class="text-xs font-bold text-red-400 mb-2">BEFORE</div>
+                                                <p class="text-sm text-clinical-text" x-text="change.text_before || 'Not present in label at time of prescription'"></p>
+                                            </div>
+                                            <div class="bg-green-900/20 border border-green-900/30 rounded-lg p-4">
+                                                <div class="text-xs font-bold text-green-400 mb-2">AFTER</div>
+                                                <p class="text-sm text-clinical-text" x-text="change.text_after"></p>
+                                            </div>
+                                        </div>
+                                    </details>
+
+                                    <!-- Version info -->
+                                    <div class="mt-3 text-xs text-clinical-text-secondary">
+                                        Active at prescription time: <span x-text="change.then_version"></span> → Current label: <span x-text="change.now_version"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 4: Drug Interactions List -->
+    <section x-show="showReport" x-transition class="bg-clinical-surface border border-clinical-border rounded-xl p-6">
+        <h2 class="text-lg font-semibold mb-2 text-clinical-text flex items-center gap-2">
+            <svg class="w-5 h-5 text-clinical-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path>
+            </svg>
+            All Drug Interactions — Current Label Data
+        </h2>
+        <p class="text-sm text-clinical-text-secondary mb-6">
+            Complete interaction profile for all drugs in this prescription as per their current FDA labels. Not temporally filtered.
+        </p>
+
+        <!-- Grouped accordions -->
+        <div class="space-y-4">
+            <template x-for="(drug, index) in drugInteractions" :key="index">
+                <details class="group bg-clinical-bg border border-clinical-border rounded-lg overflow-hidden">
+                    <summary class="flex items-center justify-between p-4 cursor-pointer hover:bg-clinical-border/20 transition-colors">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 bg-clinical-accent/20 rounded-lg flex items-center justify-center">
+                                <svg class="w-4 h-4 text-clinical-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path>
+                                </svg>
+                            </div>
+                            <div>
+                                <div class="font-medium text-clinical-text" x-text="drug.brand_name"></div>
+                                <div class="text-sm text-clinical-text-secondary" x-text="'(' + drug.generics.join(' + ') + ')'"></div>
+                            </div>
+                        </div>
+                        <svg class="w-5 h-5 text-clinical-text-secondary transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </summary>
+                    
+                    <div class="p-4 border-t border-clinical-border">
+                        <!-- Empty state -->
+                        <div x-show="!drug.interactions?.length" class="text-clinical-text-secondary italic text-sm">
+                            No interactions listed in current FDA label.
+                        </div>
+
+                        <!-- Interactions table -->
+                        <div x-show="drug.interactions?.length" class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="text-left border-b border-clinical-border">
+                                        <th class="pb-2 pr-4 text-clinical-text-secondary font-medium">Interacts With</th>
+                                        <th class="pb-2 pr-4 text-clinical-text-secondary font-medium">Severity</th>
+                                        <th class="pb-2 pr-4 text-clinical-text-secondary font-medium">Description</th>
+                                        <th class="pb-2 text-clinical-text-secondary font-medium">FDA Section</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-clinical-border/50">
+                                    <template x-for="(interaction, iidx) in drug.interactions" :key="iidx">
+                                        <tr class="group/row">
+                                            <td class="py-3 pr-4 text-clinical-text" x-text="interaction.interacts_with"></td>
+                                            <td class="py-3 pr-4">
+                                                <span class="inline-block px-2 py-1 text-xs font-medium rounded"
+                                                      :class="{
+                                                          'bg-clinical-critical text-white': interaction.severity === 'Contraindicated',
+                                                          'bg-clinical-warning text-black': interaction.severity === 'Major',
+                                                          'bg-yellow-600 text-black': interaction.severity === 'Moderate',
+                                                          'bg-clinical-text-secondary text-clinical-bg': interaction.severity === 'Minor'
+                                                      }"
+                                                      x-text="interaction.severity"></span>
+                                            </td>
+                                            <td class="py-3 pr-4 text-clinical-text" x-text="interaction.description"></td>
+                                            <td class="py-3 text-clinical-text-secondary" x-text="interaction.fda_section"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </details>
+            </template>
+        </div>
+    </section>
+
+</div>
+
+<script>
+    function medsightApp() {
+        return {
+            // Form inputs
+            prescriptionText: '',
+            prescriptionDate: '',
+            patientAge: '',
+            
+            // UI state
+            pipelineRunning: false,
+            showPipeline: false,
+            showReport: false,
+            showReset: false,
+            pipelineError: null,
+            
+            // Clarification
+            clarification: null,
+            clarificationResponse: '',
+            clarificationText: '',
+            
+            // Mock data
+            mockData: {
+                prescription_date: "2021-03-15",
+                today: "2026-06-19",
+                pipeline_steps: [
+                    { label: "Parsing Prescription", state: "complete" },
+                    { label: "Resolving Drug Names", state: "complete" },
+                    { label: "Fetching FDA Label History", state: "complete" },
+                    { label: "Computing Temporal Diff", state: "complete" },
+                    { label: "Synthesising Clinical Impact", state: "complete" },
+                    { label: "Report Ready", state: "complete" }
+                ],
+                temporal_diffs: [
+                    {
+                        drug_pair: ["Augmentin", "Dolo"],
+                        risk_emerged_date: "2022-08-01",
+                        changes: [
+                            {
+                                section: "boxed_warning",
+                                change_type: "NEW_BLACK_BOX",
+                                text_before: null,
+                                text_after: "WARNING: Concurrent use of amoxicillin-clavulanate with acetaminophen has been associated with increased risk of hepatotoxicity in patients with hepatic impairment.",
+                                then_version: "v3.1",
+                                now_version: "v5.0"
+                            }
+                        ]
+                    }
+                ],
+                drug_interactions: [
+                    {
+                        brand_name: "Augmentin",
+                        generics: ["Amoxicillin", "Clavulanic Acid"],
+                        interactions: [
+                            {
+                                interacts_with: "Warfarin",
+                                severity: "Major",
+                                description: "May enhance anticoagulant effect. Monitor INR closely.",
+                                fda_section: "drug_interactions"
+                            },
+                            {
+                                interacts_with: "Methotrexate",
+                                severity: "Major",
+                                description: "Amoxicillin may reduce renal clearance of methotrexate.",
+                                fda_section: "drug_interactions"
+                            }
+                        ]
+                    },
+                    {
+                        brand_name: "Dolo",
+                        generics: ["Paracetamol"],
+                        interactions: [
+                            {
+                                interacts_with: "Warfarin",
+                                severity: "Moderate",
+                                description: "Chronic use may enhance anticoagulant effect of warfarin.",
+                                fda_section: "drug_interactions"
+                            }
+                        ]
+                    }
+                ]
+            },
+            
+            // Pipeline steps (reactive)
+            pipelineSteps: [
+                { label: "Parsing Prescription", state: "pending", icon: "document" },
+                { label: "Resolving Drug Names", state: "pending", icon: "search" },
+                { label: "Fetching FDA Label History", state: "pending", icon: "cloud" },
+                { label: "Computing Temporal Diff", state: "pending", icon: "code" },
+                { label: "Synthesising Clinical Impact", state: "pending", icon: "beaker" },
+                { label: "Report Ready", state: "pending", icon: "shield" }
+            ],
+            
+            // Data for display
+            temporalDiffs: [],
+            drugInteractions: [],
+            
+            init() {
+                // Initialize with empty data
+                this.temporalDiffs = [];
+                this.drugInteractions = [];
+            },
+            
+            get canContinue() {
+                if (!this.clarificationResponse) return false;
+                if (this.clarificationResponse === '__other__') {
+                    return this.clarificationText.trim().length > 0;
+                }
+                return true;
+            },
+            
+            startAnalysis() {
+                if (!this.prescriptionText.trim()) return;
+                
+                this.pipelineRunning = true;
+                this.showPipeline = true;
+                this.showReport = false;
+                this.showReset = false;
+                this.pipelineError = null;
+                this.clarification = null;
+                this.clarificationResponse = '';
+                this.clarificationText = '';
+                
+                // Reset pipeline steps
+                this.pipelineSteps = [
+                    { label: "Parsing Prescription", state: "pending" },
+                    { label: "Resolving Drug Names", state: "pending" },
+                    { label: "Fetching FDA Label History", state: "pending" },
+                    { label: "Computing Temporal Diff", state: "pending" },
+                    { label: "Synthesising Clinical Impact", state: "pending" },
+                    { label: "Report Ready", state: "pending" }
+                ];
+                
+                // Simulate pipeline progress (1.2s per step)
+                let currentStep = 0;
+                
+                const advanceStep = () => {
+                    if (currentStep > 0) {
+                        this.pipelineSteps[currentStep - 1].state = 'complete';
+                    }
+                    
+                    if (currentStep < this.pipelineSteps.length) {
+                        this.pipelineSteps[currentStep].state = 'active';
+                        currentStep++;
+                        
+                        // Simulate clarification at step 2 (demo mode - 50% chance)
+                        if (currentStep === 2 && Math.random() > 0.5) {
+                            setTimeout(() => {
+                                this.showClarification();
+                            }, 1200);
+                            return;
+                        }
+                        
+                        setTimeout(advanceStep, 1200);
+                    } else {
+                        // Pipeline complete
+                        this.pipelineSteps[this.pipelineSteps.length - 1].state = 'complete';
+                        this.pipelineRunning = false;
+                        this.showReset = true;
+                        this.loadMockResults();
+                    }
+                };
+                
+                advanceStep();
+            },
+            
+            showClarification() {
+                this.clarification = {
+                    paused_at_step: 2,
+                    paused_at_step_label: "Resolving Drug Names",
+                    question: "We found 2 possible matches for 'Clavam' in the Indian drug dataset. Which did you intend?",
+                    options: [
+                        { label: "Clavam 625", detail: "Amoxicillin 500mg + Clavulanic Acid 125mg" },
+                        { label: "Clavam 1000", detail: "Amoxicillin 875mg + Clavulanic Acid 125mg" }
+                    ]
+                };
+                this.pipelineRunning = false;
+                this.pipelineSteps[1].state = 'pending';
+            },
+            
+            continueAnalysis() {
+                // Hide clarification and resume pipeline
+                this.clarification = null;
+                this.pipelineRunning = true;
+                this.pipelineSteps[1].state = 'active';
+                
+                // Continue from step 3
+                let currentStep = 2;
+                
+                const advanceStep = () => {
+                    if (currentStep > 2) {
+                        this.pipelineSteps[currentStep - 1].state = 'complete';
+                    }
+                    
+                    if (currentStep < this.pipelineSteps.length) {
+                        this.pipelineSteps[currentStep].state = 'active';
+                        currentStep++;
+                        setTimeout(advanceStep, 1200);
+                    } else {
+                        this.pipelineSteps[this.pipelineSteps.length - 1].state = 'complete';
+                        this.pipelineRunning = false;
+                        this.showReset = true;
+                        this.loadMockResults();
+                    }
+                };
+                
+                setTimeout(advanceStep, 1200);
+            },
+            
+            loadMockResults() {
+                this.temporalDiffs = this.mockData.temporal_diffs;
+                this.drugInteractions = this.mockData.drug_interactions;
+                this.mockData.prescription_date = this.prescriptionDate || "2021-03-15";
+                this.mockData.today = new Date().toISOString().split('T')[0];
+                this.showReport = true;
+            },
+            
+            resetAll() {
+                this.pipelineRunning = false;
+                this.showPipeline = false;
+                this.showReport = false;
+                this.showReset = false;
+                this.pipelineError = null;
+                this.clarification = null;
+                this.clarificationResponse = '';
+                this.clarificationText = '';
+                this.temporalDiffs = [];
+                this.drugInteractions = [];
+                this.pipelineSteps = [
+                    { label: "Parsing Prescription", state: "pending" },
+                    { label: "Resolving Drug Names", state: "pending" },
+                    { label: "Fetching FDA Label History", state: "pending" },
+                    { label: "Computing Temporal Diff", state: "pending" },
+                    { label: "Synthesising Clinical Impact", state: "pending" },
+                    { label: "Report Ready", state: "pending" }
+                ];
+            }
+        }
+    }
+</script>
+
+</body>
+</html>

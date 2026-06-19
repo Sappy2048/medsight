@@ -31,12 +31,12 @@ from src.schemas.synthesizer_schema import MedSightFinalReport
 
 logger = logging.getLogger("medsight.graph")
 
-# ─── State Definition ─────────────────────────────────────────────────────────
-
-class MedSightState(TypedDict):
+# ─── State Definition ─────────────────class MedSightState(TypedDict):
     # ── Input ─────────────────────────────────────
     raw_input:           str
     prescription:        Optional[ParsedPrescription]
+    input_prescription_date: Optional[str]
+    input_patient_age:       Optional[int]
 
     # ── Pipeline intermediates ────────────────────
     resolved_drugs:      List[ResolvedDrug]
@@ -60,7 +60,25 @@ class MedSightState(TypedDict):
     # ── Error tracking ────────────────────────────
     errors:              List[str]
 
+
 # ─── Node Functions ───────────────────────────────────────────────────────────
+
+def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: Any):
+    
+    async def copilot_preflight_node(state: MedSightState) -> Dict[str, Any]:
+        logger.info("Node: copilot_preflight")
+        prescription, clarification_msg = await preflight_validate(
+            state["raw_input"], 
+            llm_client,
+            override_date=state.get("input_prescription_date"),
+            override_age=state.get("input_patient_age")
+        )
+        
+        return {
+            "prescription": prescription,
+            "clarification_message": clarification_msg,
+            "awaiting_input": bool(clarification_msg)
+        }�───────────────────
 
 def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: Any):
     

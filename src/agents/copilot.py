@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 async def preflight_validate(
     raw_input: str,
     llm_client: AsyncOpenAI,
+    override_date: Optional[str] = None,
+    override_age: Optional[int] = None,
 ) -> Tuple[ParsedPrescription, Optional[str]]:
     """
     Mode 1: Entry gate.
@@ -49,6 +51,16 @@ async def preflight_validate(
             raw_input=raw_input,
             extraction_confidence="low"
         )
+
+    # Apply overrides if parsed values are missing
+    if override_date and not parsed.prescription_date:
+        try:
+            from datetime import date
+            parsed.prescription_date = date.fromisoformat(override_date)
+        except Exception:
+            pass
+    if override_age and not parsed.patient_age:
+        parsed.patient_age = override_age
 
     # The ideal format template to prepend to any clarification requests
     ideal_format_header = (

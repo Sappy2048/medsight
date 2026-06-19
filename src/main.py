@@ -2,6 +2,9 @@ import os
 import logging
 from typing import Optional, Union, Literal
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 from qdrant_client import QdrantClient
@@ -25,6 +28,14 @@ app = FastAPI(
     title="MedSight Drug Safety Intelligence System",
     description="REST API for retrospective drug-drug interaction detection using LangGraph.",
     version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Initialize global clients
@@ -52,6 +63,16 @@ class EvaluateRequest(BaseModel):
         ...,
         description="The raw prescription or clinical query string to evaluate.",
         examples=["Patient prescribed Warfarin and Azithromycin in May 2015"],
+    )
+    prescription_date: Optional[str] = Field(
+        default=None,
+        description="Optional ISO date string (YYYY-MM-DD) if not included in the query text.",
+        examples=["2015-05-15"],
+    )
+    patient_age: Optional[int] = Field(
+        default=None,
+        description="Optional patient age in years if not included in the query text.",
+        examples=[45],
     )
 
 class MedSightSuccessResponse(BaseModel):
@@ -120,6 +141,12 @@ async def evaluate(request: EvaluateRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An error occurred while evaluating the prescription: {str(e)}",
         )
+
+@app.get("/", include_in_schema=False)
+async def serve_frontend():
+    """Serve the MedSight frontend HTML file."""
+    frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html")
+    return FileResponse(frontend_path, media_type="text/html")
 
 if __name__ == "__main__":
     import uvicorn

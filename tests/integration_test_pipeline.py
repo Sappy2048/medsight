@@ -189,44 +189,149 @@ def _print_label_preview(name: str, content: Optional[str], max_chars: int = 600
         print(f"       ... (+{len(content) - max_chars} chars truncated)")
 
 
-def display_stage4_and_5(state: dict):
-    """Display Stage 4 (Extraction) summary and Stage 5 (Temporal Diff)."""
-    _section("STAGE 4 & 5 — Temporal Diff (Past vs Present Warning Changes)")
+def display_stage4(state: dict):
+    """Display Stage 4: Extraction results per generic (from extraction_results in state)."""
+    _section("STAGE 4 — Interaction Extraction (LLM)")
 
-    diffs = state.get("diffs", [])
+    extraction_results = state.get("extraction_results", {})
+    label_history      = state.get("label_history", {})
+
+    if not label_history:
+        _warn("No label history in state — extraction was never attempted.")
+        return
+
+    if not extraction_results:
+        _warn(
+            f"label_history has {len(label_history)} generic(s) but extraction_results is empty. "
+            "The extraction agent may have failed silently — check logs for WARNING/ERROR lines."
+        )
+        return
+
+    _ok(f"Extraction completed for {len(extraction_results)} generic(s).")
+
+    for generic, pair in extraction_results.items():
+        past_ext    = pair.get("past")
+        present_ext = pair.get("present")
+
+        print(f"\n  Drug: {generic}")
+        print("  " + _SEP_THIN)
+
+        # ── Historical extraction ──────────────────────────────────────────────
+        if past_ext:
+            past_date = past_ext.version_date
+            n = len(past_ext.interactions)
+            if n:
+                _ok(f"HISTORICAL ({past_date}) — {n} interaction(s) extracted")
+                for idx, rec in enumerate(past_ext.interactions, 1):
+                    badge = SEVERITY_BADGE.get(rec.severity_score, "❓ UNKNOWN")
+                    print(f"\n    [{idx}] Target       : {rec.target_drug}")
+                    print(f"         Severity     : {badge}  (score={rec.severity_score})")
+                    print(f"         Sev. text    : \"{rec.severity_text}\"")
+                    print(f"         Section      : {rec.section}")
+                    print(f"         Recommend.   :")
+                    print(_wrap(rec.recommendation_text[:300], width=68, indent="           "))
+            else:
+                _warn(f"HISTORICAL ({past_date}) — no named drug interactions found.")
+        else:
+            _warn(f"No historical extraction result for {generic}.")
+
+        # ── Current extraction ─────────────────────────────────────────────────
+        if present_ext:
+            present_date = present_ext.version_date
+            n = len(present_ext.interactions)
+            if n:
+                _ok(f"CURRENT     ({present_date}) — {n} interaction(s) extracted")
+                for idx, rec in enumerate(present_ext.interactions, 1):
+                    badge = SEVERITY_BADGE.get(rec.severity_score, "❓ UNKNOWN")
+                    print(f"\n    [{idx}] Target       : {rec.target_drug}")
+                    print(f"         Severity     : {badge}  (score={rec.severity_score})")
+                    print(f"         Sev. text    : \"{rec.severity_text}\"")
+                    print(f"         Section      : {rec.section}")
+                    print(f"         Recommend.   :")
+                    print(_wrap(rec.recommendation_text[:300], width=68, indent="           "))
+            else:
+                _warn(f"CURRENT     ({present_date}) — no named drug interactions found.")
+        else:
+            _warn(f"No current extraction result for {generic}.")
+
+    print()
+
+
+def display_stage5(state: dict):
+    """Display Stage 5: Temporal diff results."""
+    _section("STAGE 5 — Temporal Diff (Past vs Present Warning Changes)")
+
+    diffs          = state.get("diffs", [])
     reasoning_list = state.get("reasoning", [])
+    label_history  = state.get("label_history", {})
+    extraction_results = state.get("extraction_results", {})
+
+    # ── Diagnostics — help user understand why diffs may be empty ─────────────
+    print(f"  Label history generics : {list(label_history.keys()) or '(none)'}")
+    print(f"  Extraction results     : {list(extraction_results.keys()) or '(none)'}")
+    print(f"  Diffs computed         : {len(diffs)}")
 
     if not diffs:
-        _warn("No diffs computed — either no label pairs were found or all pairs were empty.")
+        if label_history and not extraction_results:
+            _fail(
+                "Diffs are empty AND extraction_results is empty — "
+                "the extraction agent returned nothing. Check STAGE 4 warnings above."
+            )
+        elif extraction_results:
+            total_past = sum(
+                len(v["past"].interactions) if v.get("past") else 0
+                for v in extraction_results.values()
+            )
+            total_present = sum(
+                len(v["present"].interactions) if v.get("present") else 0
+                for v in extraction_results.values()
+            )
+            if total_past == 0 and total_present == 0:
+                _warn(
+                    "Extraction ran but found 0 interactions in both past and present labels. "
+                    "Temporal diff has no data to compare — all pairs would be UNCHANGED."
+                )
+            else:
+                _warn("Diffs list is empty despite extraction finding interactions. Check temporal agent.")
+        else:
+            _warn("No diffs — label history and extraction both empty.")
         return
 
     significant = [d for d in diffs if d.is_clinically_significant]
-    _ok(f"{len(diffs)} drug pair(s) evaluated — {len(significant)} clinically significant change(s).")
+    _ok(
+        f"{len(diffs)} pair(s) evaluated — "
+        f"🚨 {len(significant)} clinically significant  |  "
+        f"➖ {len(diffs) - len(significant)} unchanged/minor."
+    )
 
     for i, (diff, reasoning) in enumerate(zip(diffs, reasoning_list), 1):
         change_badge = CHANGE_BADGE.get(diff.change_type, f"❓ {diff.change_type}")
-        sig_marker = "🚨" if diff.is_clinically_significant else "  "
+        sig_marker   = "🚨" if diff.is_clinically_significant else "  "
 
         print(f"\n  {sig_marker} [{i}] {diff.drug_pair}")
         print(f"       Change type     : {change_badge}")
-        print(f"       Severity delta  : {diff.severity_delta:+d}  "
-              f"(past={diff.past_severity_score} → present={diff.present_severity_score})")
+        print(
+            f"       Severity delta  : {diff.severity_delta:+d}  "
+            f"(past={diff.past_severity_score} → present={diff.present_severity_score})"
+        )
         print(f"       Past date       : {diff.past_version_date}")
         print(f"       Present date    : {diff.present_version_date}")
 
-        if diff.past_recommendation:
-            print(f"       Past rec.       : {diff.past_recommendation[:160]}")
-        if diff.present_recommendation:
-            print(f"       Present rec.    : {diff.present_recommendation[:160]}")
-
         if diff.data_unavailable:
             _warn("   Label history predates prescription date — data unavailable.")
+
+        if diff.past_recommendation:
+            print(f"\n       Past rec.:")
+            print(_wrap(diff.past_recommendation[:250], width=68, indent="         "))
+        if diff.present_recommendation:
+            print(f"\n       Present rec.:")
+            print(_wrap(diff.present_recommendation[:250], width=68, indent="         "))
 
         if reasoning and isinstance(reasoning, dict):
             clinical = reasoning.get("clinical_reasoning", "")
             if clinical:
                 print(f"\n       Clinical reasoning:")
-                print(_wrap(clinical[:400], width=70, indent="         "))
+                print(_wrap(clinical[:400], width=68, indent="         "))
     print()
 
 
@@ -357,6 +462,7 @@ async def run_instrumented(
         prescription=None,
         resolved_drugs=[],
         label_history={},
+        extraction_results={},
         diffs=[],
         reasoning=[],
         impact_report=None,
@@ -476,7 +582,8 @@ async def main():
 
         display_stage2(state)
         display_stage3(state)
-        display_stage4_and_5(state)
+        display_stage4(state)
+        display_stage5(state)
         display_stage6(state)
         display_stage7(state)
         display_errors(state)
