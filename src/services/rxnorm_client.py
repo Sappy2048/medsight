@@ -83,3 +83,52 @@ async def get_rxcui(
 
     logger.debug("RxNorm: resolved '%s' → '%s'.", drug_name, cuis[0])
     return cuis[0]
+
+
+async def get_drug_classes(drug_name: str) -> list[str]:
+    """
+    Asynchronously calls the NLM RxClass API to retrieve drug classes
+    associated with a specified drug name.
+
+    Args:
+        drug_name: The name of the generic or branded drug.
+
+    Returns:
+        A flat, de-duplicated list of class names (strings) associated with the drug.
+        Returns an empty list [] on failure, missing data, or timeout.
+    """
+    url = f"{RXNORM_BASE_URL}/rxclass/class/byDrugName.json"
+    params = {"drugName": drug_name}
+
+    logger.debug("RxClass request: GET %s | params=%s", url, params)
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+        drug_info_list = data.get("rxclassDrugInfoList", {}).get("rxclassDrugInfo", [])
+        
+        classes = []
+        for item in drug_info_list:
+            class_item = item.get("rxclassMinConceptItem", {})
+            class_name = class_item.get("className")
+            if class_name:
+                classes.append(class_name)
+
+        # De-duplicate while preserving order
+        seen = set()
+        unique_classes = []
+        for c in classes:
+            if c not in seen:
+                seen.add(c)
+                unique_classes.append(c)
+
+        logger.debug("RxClass: resolved '%s' to classes: %s", drug_name, unique_classes)
+        return unique_classes
+
+    except Exception as e:
+        logger.warning("RxClass lookup failed for '%s': %s", drug_name, e)
+        return []
+

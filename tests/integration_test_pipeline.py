@@ -41,6 +41,7 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logging.getLogger("medsight").setLevel(logging.INFO)
+logging.getLogger("src").setLevel(logging.INFO)
 logging.getLogger("integration_test").setLevel(logging.INFO)
 logger = logging.getLogger("integration_test")
 
@@ -121,7 +122,7 @@ def display_stage1(state: dict):
     return True
 
 
-def display_stage2(state: dict):
+async def display_stage2(state: dict):
     """Display Stage 2: Drug Resolution."""
     _section("STAGE 2 — Drug Resolution")
 
@@ -131,6 +132,7 @@ def display_stage2(state: dict):
         return
 
     _ok(f"{len(resolved_drugs)} drug(s) resolved to canonical generics.")
+    from src.services.rxnorm_client import get_drug_classes
     for resolved in resolved_drugs:
         print(f"\n  Drug: {resolved.raw_prescription_input}")
         print(f"    Resolution method : {resolved.resolution_method}  (score={resolved.fuzzy_score})")
@@ -139,6 +141,11 @@ def display_stage2(state: dict):
         print(f"    RxCUI(s)          : {', '.join(resolved.rxcui_list) or '(none resolved)'}")
         if resolved.dataset_metadata:
             print(f"    Manufacturer      : {resolved.dataset_metadata.manufacturer}")
+        
+        for generic in resolved.generic_names:
+            classes = await get_drug_classes(generic)
+            if classes:
+                print(f"    Resolved Class(es): {', '.join(classes)}")
     print()
 
 
@@ -580,7 +587,7 @@ async def main():
             print("  ↳ Pipeline halted at Stage 1.\n")
             continue
 
-        display_stage2(state)
+        await display_stage2(state)
         display_stage3(state)
         display_stage4(state)
         display_stage5(state)

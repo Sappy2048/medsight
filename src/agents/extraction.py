@@ -117,7 +117,7 @@ _SYSTEM_PROMPT = _build_system_prompt()
 
 # ─── Phase 1: Text Chunking ─────────────────────────────────────────────────
 
-def _chunk_text(text: str, max_chars: int = 4000, overlap_chars: int = 250) -> list[str]:
+def _chunk_text(text: str, max_chars: int = 1500, overlap_chars: int = 250) -> list[str]:
     """
     Splits text into chunks bounded by paragraph breaks (\n\n).
     If a single paragraph exceeds max_chars, it force-splits it using a sliding
@@ -279,7 +279,7 @@ async def _extract_section(
     """
     Orchestrates extraction over one label section.
     """
-    chunks = _chunk_text(section_text, max_chars=4000)
+    chunks = _chunk_text(section_text, max_chars=1500, overlap_chars=250)
 
     if len(chunks) == 1:
         return await _extract_chunk(section_name, chunks[0], source_drug, llm_client)
