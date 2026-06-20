@@ -42,6 +42,7 @@ def test_select_active_modern_set_id():
     assert winner == "uuid-C", "Failed to select the modern ID based on version/date waterfall"
 
 
+@pytest.mark.asyncio
 async def test_select_deepest_historical_set_id_empty_raises():
     """Ensure _select_deepest_historical_set_id raises on an empty candidate list."""
     import httpx

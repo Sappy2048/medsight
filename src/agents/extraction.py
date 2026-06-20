@@ -2,6 +2,7 @@ import json
 import logging
 from typing import Optional, Literal, cast
 import asyncio
+import textwrap
 
 from openai import AsyncOpenAI
 
@@ -116,9 +117,11 @@ _SYSTEM_PROMPT = _build_system_prompt()
 
 # ─── Phase 1: Text Chunking ─────────────────────────────────────────────────
 
-def _chunk_text(text: str, max_chars: int = 4000) -> list[str]:
+def _chunk_text(text: str, max_chars: int = 4000, overlap_chars: int = 250) -> list[str]:
     """
-    Splits a large section string into chunks bounded by paragraph breaks (\n\n).
+    Splits text into chunks bounded by paragraph breaks (\n\n).
+    If a single paragraph exceeds max_chars, it force-splits it using a sliding
+    window with overlap to prevent context loss at the boundaries.
     """
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     chunks: list[str] = []
@@ -127,13 +130,34 @@ def _chunk_text(text: str, max_chars: int = 4000) -> list[str]:
 
     for para in paragraphs:
         if len(para) > max_chars:
+            # Flush the current buffer first to keep things clean
             if current_parts:
                 chunks.append("\n\n".join(current_parts))
                 current_parts = []
                 current_len = 0
-            chunks.append(para)
+            
+            # Force-split the massive paragraph with a sliding window + overlap
+            start = 0
+            while start < len(para):
+                end = min(start + max_chars, len(para))
+                
+                # If we are not at the very end of the text, avoid cutting a word in half
+                # by snapping the 'end' index backward to the nearest space
+                if end < len(para):
+                    last_space = para.rfind(" ", start, end)
+                    if last_space != -1 and last_space > start:
+                        end = last_space
+
+                chunks.append(para[start:end].strip())
+                
+                if end == len(para):
+                    break
+                
+                # Step back by overlap_chars to preserve clinical context across the boundary
+                start = end - overlap_chars
             continue
 
+        # Normal paragraph accumulation (no forced splits needed)
         if current_len + len(para) > max_chars and current_parts:
             chunks.append("\n\n".join(current_parts))
             current_parts = [para]
@@ -142,6 +166,7 @@ def _chunk_text(text: str, max_chars: int = 4000) -> list[str]:
             current_parts.append(para)
             current_len += len(para)
 
+    # Flush any remaining text in the buffer
     if current_parts:
         chunks.append("\n\n".join(current_parts))
 
@@ -157,7 +182,7 @@ async def _extract_chunk(
     llm_client: AsyncOpenAI,
 ) -> list[dict]:
     """
-    Single LLM call for one text chunk of a label section.
+    Single LLM call for one text chunk of a label section using standard JSON Mode.
     """
     user_message = (
         f"Source drug: {source_drug}\n"
@@ -180,9 +205,10 @@ async def _extract_chunk(
                 max_tokens=4096,
             )
 
-            content = response.choices[0].message.content or ""
+            content = response.choices[0].message.content or "{}"
             raw = json.loads(content)
 
+            # Handle both list and dict returns just in case
             if isinstance(raw, list):
                 interactions = raw
             elif isinstance(raw, dict):
@@ -191,13 +217,9 @@ async def _extract_chunk(
                 raise ValueError(f"Unexpected JSON structure returned from LLM: {type(raw)}")
 
             if not isinstance(interactions, list):
-                raise ValueError(
-                    f"Expected 'interactions' list, got {type(interactions)}"
-                )
+                raise ValueError(f"Expected 'interactions' list, got {type(interactions)}")
 
-            logger.debug(
-                f"Chunk of '{section_name}' → {len(interactions)} interactions"
-            )
+            logger.debug(f"Chunk of '{section_name}' → {len(interactions)} interactions")
             return interactions
 
         except (json.JSONDecodeError, ValueError, Exception) as e:
@@ -212,7 +234,6 @@ async def _extract_chunk(
         f"Skipping chunk — pipeline continues."
     )
     return []
-
 
 # ─── Phase 3: Section Orchestrator ───────────────────────────────────────────
 
