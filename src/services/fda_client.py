@@ -25,6 +25,10 @@ _MONTH_MAP = {
 # Default HTTP timeout for all requests
 DEFAULT_TIMEOUT = 30.0
 
+# Maximum number of candidates to probe when resolving historical lineage
+# Increased to 15 to cast a wider historical net
+_HISTORICAL_PROBE_LIMIT = 50
+
 
 # ─── Internal Helpers ─────────────────────────────────────────────────────────
 
@@ -131,18 +135,19 @@ def _parse_label_xml(
     )
 
 
-def _select_canonical_set_id(candidates: list[dict]) -> str:
+def _select_active_modern_set_id(candidates: list[dict]) -> str:
     """
-    Priority waterfall for selecting the canonical spl_set_id.
-    Priority:
-      1. Most versions overall (actively maintained lineage proxy)
-      2. Most recently published (tie-breaker)
+    Select the spl_set_id whose lineage best reflects modern regulatory updates.
+
+    Selection priority (all sync — no network calls needed):
+      1. Highest spl_version count  — proxy for active, well-maintained lineage
+      2. Most recent published_date — tie-breaker for equal version counts
+
+    This is the selector used for the *present* label.
     """
     if not candidates:
-        raise ValueError("No candidates provided")
+        raise ValueError("No candidates provided to _select_active_modern_set_id")
 
-
-    # Sort by: version count (desc), then published date (desc)
     def sort_key(c: dict):
         try:
             spl_version = int(c.get("spl_version", 0))
@@ -155,20 +160,117 @@ def _select_canonical_set_id(candidates: list[dict]) -> str:
         return (spl_version, pub_date)
 
     sorted_candidates = sorted(candidates, key=sort_key, reverse=True)
-    return sorted_candidates[0]["setid"]
+    chosen = sorted_candidates[0]["setid"]
+    logger.debug(
+        f"[modern selector] chose setid={chosen} "
+        f"(spl_version={sorted_candidates[0].get('spl_version')}, "
+        f"published={sorted_candidates[0].get('published_date')})"
+    )
+    return chosen
+
+
+async def _select_deepest_historical_set_id(
+    candidates: list[dict], client: httpx.AsyncClient, prescription_date: datetime
+) -> str:
+    """
+    Select the spl_set_id whose lineage has the active label closest to
+    (but not after) the prescription date.
+
+    This anchors historical lineage selection to the exact prescription moment,
+    avoiding defunct lineages that may have stopped updating years before the
+    prescription was written.
+
+    Strategy:
+      - Cap to the top _HISTORICAL_PROBE_LIMIT candidates (by published date) to
+        limit extra network round-trips.
+      - Concurrently fetch each candidate's version history.
+      - For each, find the latest version whose published_date <= prescription_date.
+      - Return the setid whose closest-prior date is the maximum (i.e. most
+        recently active lineage relative to the prescription date).
+      - Falls back to the modern selector result if history probing fails entirely.
+    """
+    if not candidates:
+        raise ValueError("No candidates provided to _select_deepest_historical_set_id")
+
+    # Pre-filter: Sort by the candidate's latest published_date ASCENDING.
+    # Lineages that were discontinued or haven't been updated in years
+    # will naturally float to the top of this list, giving us the perfect
+    # pool of legacy lines to probe for older records.
+    def presort_key(c: dict):
+        pub_date_str = c.get("published_date")
+        if not pub_date_str:
+            return datetime(9999, 12, 31)  # Sink invalid dates to the bottom
+        try:
+            return _parse_dailymed_date(pub_date_str)
+        except ValueError:
+            return datetime(9999, 12, 31)
+
+    # Sort ascending (oldest first) and slice
+    top_candidates = sorted(candidates, key=presort_key)[:_HISTORICAL_PROBE_LIMIT]
+
+    async def probe_closest_date(candidate: dict) -> tuple[str, datetime]:
+        """Fetch history for one candidate and return the closest valid date before or on the prescription date."""
+        setid = candidate["setid"]
+        url = f"{DAILYMED_BASE_URL}/spls/{setid}/history.json"
+        try:
+            response = await client.get(url, timeout=DEFAULT_TIMEOUT)
+            response.raise_for_status()
+            history_entries = response.json().get("data", {}).get("history", [])
+
+            # Collect all dates that are on or before the prescription date
+            valid_dates = []
+            for entry in history_entries:
+                pub_date_str = entry.get("published_date")
+                if not pub_date_str:
+                    continue
+                try:
+                    pub_date = _parse_dailymed_date(pub_date_str)
+                except ValueError:
+                    continue
+                if pub_date <= prescription_date:
+                    valid_dates.append(pub_date)
+
+            if valid_dates:
+                # The closest date to the prescription date (largest value <= rx_date)
+                closest_date = max(valid_dates)
+                return setid, closest_date
+        except Exception as exc:
+            logger.debug(f"[historical probe] failed for setid={setid}: {exc}")
+
+        # Sentinel: no valid versions before prescription date, or request failed.
+        # Use a far-past date so this candidate sinks to the bottom of the descending sort.
+        return setid, datetime(1000, 1, 1)
+
+    # Probe all candidates concurrently
+    probe_results = await asyncio.gather(*[probe_closest_date(c) for c in top_candidates])
+
+    # Sort descending: the candidate whose active label is closest to the prescription date wins
+    probe_results_sorted = sorted(probe_results, key=lambda t: t[1], reverse=True)
+    best_setid, best_date = probe_results_sorted[0]
+
+    if best_date == datetime(1000, 1, 1):
+        # All probes failed or no candidate had a version before the prescription date
+        logger.warning(
+            "[historical selector] all history probes failed or no valid pre-prescription "
+            "versions found; falling back to modern selector for past lineage."
+        )
+        return _select_active_modern_set_id(candidates)
+
+    logger.debug(
+        f"[historical selector] chose setid={best_setid} "
+        f"(closest pre-prescription date={best_date.date()})"
+    )
+    return best_setid
 
 
 # ─── Public API Functions ──────────────────────────────────────────────────────
 
 
-async def get_spl_set_id(drug_name: str, client: httpx.AsyncClient) -> str:
+async def _resolve_candidates(drug_name: str, client: httpx.AsyncClient) -> list[dict]:
     """
-    Resolve a drug name to its canonical spl_set_id via DailyMed /spls search.
-
-    Applies the canonical selection waterfall when multiple manufacturers exist.
-    Uses human/rxonly filter to exclude animal and OTC labels from the candidate pool.
+    Fetch the raw candidate list for a drug name from DailyMed /spls.
+    Returns the raw list[dict] so callers can apply whichever selector they need.
     """
-
     url = f"{DAILYMED_BASE_URL}/spls.json"
 
     for params in [
@@ -179,10 +281,22 @@ async def get_spl_set_id(drug_name: str, client: httpx.AsyncClient) -> str:
         response.raise_for_status()
         candidates = response.json().get("data", [])
         if candidates:
-            logger.info(f"Resolved '{drug_name}' with params: {params}")
-            return _select_canonical_set_id(candidates)
+            logger.info(f"Resolved '{drug_name}' with params: {params} → {len(candidates)} candidates")
+            return candidates
 
     raise ValueError(f"No SPL found in DailyMed for drug: '{drug_name}'")
+
+
+async def get_spl_set_id(drug_name: str, client: httpx.AsyncClient) -> str:
+    """
+    Resolve a drug name to its canonical spl_set_id via DailyMed /spls search.
+
+    Uses the modern (active) selector — suitable for cases where a single
+    set_id is required (e.g. direct version history lookups).
+    """
+    candidates = await _resolve_candidates(drug_name, client)
+    return _select_active_modern_set_id(candidates)
+
 
 async def get_version_history(
     spl_set_id: str, client: httpx.AsyncClient
@@ -309,16 +423,24 @@ async def get_past_and_present_labels(
     Orchestrator: given a drug name and prescription date, return the label
     that was active ON that date (past) and the current latest label (present).
 
-    Both labels are guaranteed to come from the same spl_set_id lineage,
-    making the temporal diff in Agent 4 semantically valid.
+    Key design: past and present labels are now resolved from INDEPENDENT
+    spl_set_id lineages, each optimised for its temporal objective:
 
-    Version selection logic:
-      - past    = latest version whose published_date <= prescription_date
-      - present = latest version overall (highest spl_version)
+      - present_set_id  →  _select_active_modern_set_id()
+          Picks the lineage with the highest version count and most recent
+          publication. Ensures modern safety mandates are never missed due to
+          an older brand lineage going inactive.
 
-    If the prescription_date is before the earliest known version, we use
-    version 1 as the past label and log a warning. This handles edge cases
-    where the drug existed before DailyMed records began.
+      - past_set_id     →  _select_deepest_historical_set_id()
+          Concurrently probes the top candidate history ledgers and selects the
+          lineage whose active label is closest to the prescription date.
+
+    Version selection logic within each lineage:
+      - past    = latest version whose published_date <= prescription_date,
+                  falling back to version 1 if the rx date predates the registry.
+      - present = absolute latest version (highest spl_version in its lineage).
+
+    Both XML downloads are initiated concurrently via asyncio.gather.
 
     Args:
         drug_name:         Generic or brand name string
@@ -333,41 +455,73 @@ async def get_past_and_present_labels(
     """
     rx_date = datetime.strptime(prescription_date, "%Y-%m-%d")
 
-    spl_set_id = await get_spl_set_id(drug_name, client)
-    logger.info(f"Resolved '{drug_name}' → spl_set_id: {spl_set_id}")
+    # ── Step 1: Resolve candidate pool once (single network call) ────────────
+    candidates = await _resolve_candidates(drug_name, client)
 
-    versions = await get_version_history(spl_set_id, client)
+    # ── Step 2: Resolve both lineages concurrently ────────────────────────────
+    # present selector is synchronous; historical selector needs async probe calls.
+    # We run the historical probe alongside fetching the present lineage's history.
+    present_set_id = _select_active_modern_set_id(candidates)
 
-    # Select past version — latest version published on or before rx_date
+    past_set_id = await _select_deepest_historical_set_id(candidates, client, rx_date)
+
+    logger.info(
+        f"'{drug_name}' lineage split — "
+        f"present_set_id={present_set_id}, past_set_id={past_set_id}"
+    )
+
+    # ── Step 3: Fetch both version histories concurrently ─────────────────────
+    if present_set_id == past_set_id:
+        # Same lineage selected — one history fetch suffices
+        present_versions = await get_version_history(present_set_id, client)
+        past_versions = present_versions
+    else:
+        present_versions, past_versions = await asyncio.gather(
+            get_version_history(present_set_id, client),
+            get_version_history(past_set_id, client),
+        )
+
+    # ── Step 4: Select specific version from each history ─────────────────────
+
+    # Present: absolute latest version in the modern lineage
+    present_version = present_versions[-1]
+
+    # Past: latest version in the historical lineage published on or before rx_date
     past_version: Optional[SPLVersion] = None
-    for v in versions:  # ascending order, so last match wins
+    for v in past_versions:  # ascending order — last match wins
         if _parse_dailymed_date(v.effective_time) <= rx_date:
             past_version = v
 
     if past_version is None:
         # Prescription predates all known DailyMed records — use earliest available
-        past_version = versions[0]
+        past_version = past_versions[0]
         logger.warning(
             f"Prescription date {prescription_date} predates all DailyMed records "
-            f"for {drug_name} (earliest: {past_version.effective_time}). "
-            f"Using earliest available version."
+            f"for '{drug_name}' in the historical lineage "
+            f"(earliest: {past_version.effective_time}). "
+            f"Using earliest available version as past label."
         )
 
-    # Present version is always the last element (sorted ascending)
-    present_version = versions[-1]
-
-    # Fetch both label XMLs in parallel — no reason to wait for one before the other
+    # ── Step 5: Fetch both XML labels concurrently ────────────────────────────
     past_label, present_label = await asyncio.gather(
         get_label_content(
-            spl_set_id, past_version.spl_version, past_version.effective_time, client
+            past_version.spl_set_id,
+            past_version.spl_version,
+            past_version.effective_time,
+            client,
         ),
         get_label_content(
-            spl_set_id,
+            present_version.spl_set_id,
             present_version.spl_version,
             present_version.effective_time,
             client,
         ),
     )
 
-    logger.info(f"Past: {past_label.spl_id} ({past_label.effective_time}) | Present: {present_label.spl_id} ({present_label.effective_time})")
+    logger.info(
+        f"Past:    {past_label.spl_id} ({past_label.effective_time}) "
+        f"[lineage: {past_version.spl_set_id}]\n"
+        f"Present: {present_label.spl_id} ({present_label.effective_time}) "
+        f"[lineage: {present_version.spl_set_id}]"
+    )
     return past_label, present_label

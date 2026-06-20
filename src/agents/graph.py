@@ -84,7 +84,9 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
         return {"resolved_drugs": resolved_drugs}
 
     async def label_fetcher_node(state: MedSightState) -> Dict[str, Any]:
-        logger.info("Node: label_fetcher (Concurrent + FDC Aware)")
+        logger.info(
+            "Node: label_fetcher (Concurrent + FDC Aware + Decoupled Lineage)"
+        )
         if state["prescription"] is None:
             raise ValueError("Prescription is None — cannot fetch labels.")
         import httpx
@@ -100,25 +102,44 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
         
         label_history = {}
         
-        async with httpx.AsyncClient(timeout=30.0) as http_client:
-            # Concurrent worker path per constituent generic
+        # Timeout raised to 60 s: the historical selector makes extra concurrent
+        # history-ledger probes (up to _HISTORICAL_PROBE_LIMIT candidates), which
+        # adds one extra round-trip layer on top of the normal label download.
+        async with httpx.AsyncClient(timeout=60.0) as http_client:
+            # Concurrent worker path per constituent generic.
+            # get_past_and_present_labels now returns labels from INDEPENDENT
+            # spl_set_id lineages — past from the deepest-historical lineage,
+            # present from the most-active modern lineage. The tuple schema
+            # (past, present) is unchanged so downstream nodes are unaffected.
             async def fetch_worker(generic_name: str) -> Tuple[str, Optional[Tuple[Any, Any]]]:
                 try:
                     past, present = await get_past_and_present_labels(
                         generic_name, prescription_date, http_client
                     )
+                    logger.info(
+                        f"[label_fetcher] {generic_name}: "
+                        f"past={past.spl_id} | present={present.spl_id}"
+                    )
                     return generic_name, (past, present)
                 except Exception as e:
-                    logger.error(f"Failed to fetch labels for constituent {generic_name}: {e}")
+                    logger.error(
+                        f"Failed to fetch labels for constituent '{generic_name}': {e}"
+                    )
                     return generic_name, None
 
-            # SPEED TWEAK + FDC FIX: Extract EVERY constituent generic across ALL drugs into a set.
-            # The set automatically deduplicates common salts across different prescribed products!
+            # SPEED TWEAK + FDC FIX: Extract EVERY constituent generic across ALL
+            # drugs into a set. The set deduplicates common salts across products.
             all_individual_generics = {
-                g_name for drug in state["resolved_drugs"] for g_name in drug.generic_names
+                g_name
+                for drug in state["resolved_drugs"]
+                for g_name in drug.generic_names
             }
+            logger.info(
+                f"[label_fetcher] fetching labels for {len(all_individual_generics)} "
+                f"unique generics: {all_individual_generics}"
+            )
 
-            # HIGH CONCURRENCY: Fan out all label fetches simultaneously using connection pooling
+            # HIGH CONCURRENCY: Fan out all label fetches simultaneously.
             tasks = [fetch_worker(g_name) for g_name in all_individual_generics]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
@@ -128,7 +149,10 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
                 generic_name, label_pair = res
                 if label_pair:
                     label_history[generic_name] = label_pair
-                    
+
+        logger.info(
+            f"[label_fetcher] completed — {len(label_history)} generics in label_history"
+        )
         return {"label_history": label_history}
 
     async def temporal_node(state: MedSightState) -> Dict[str, Any]:

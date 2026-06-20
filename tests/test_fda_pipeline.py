@@ -4,7 +4,8 @@ import lxml.etree as etree
 
 # Import the functions from your main module (assuming it's named fda_client.py)
 from src.services.fda_client import (
-    _select_canonical_set_id,
+    _select_active_modern_set_id,
+    _select_deepest_historical_set_id,
     _parse_dailymed_date,
     _extract_section_text,
     SPL_XML_NAMESPACE
@@ -18,9 +19,9 @@ def test_parse_dailymed_date():
     with pytest.raises(ValueError):
         _parse_dailymed_date("Invalid Date String")
 
-def test_select_canonical_set_id():
+def test_select_active_modern_set_id():
     """
-    Test that the canonical selector correctly picks the labeler with the 
+    Test that the modern selector correctly picks the labeler with the 
     highest spl_version, falling back to published_date on a tie.
     """
     candidates = [
@@ -37,8 +38,18 @@ def test_select_canonical_set_id():
         {"setid": "uuid-D"}
     ]
     
-    winner = _select_canonical_set_id(candidates)
-    assert winner == "uuid-C", "Failed to select the canonical ID based on version/date waterfall"
+    winner = _select_active_modern_set_id(candidates)
+    assert winner == "uuid-C", "Failed to select the modern ID based on version/date waterfall"
+
+
+async def test_select_deepest_historical_set_id_empty_raises():
+    """Ensure _select_deepest_historical_set_id raises on an empty candidate list."""
+    import httpx
+
+    rx_date = datetime(2020, 1, 1)
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(ValueError, match="No candidates provided"):
+            await _select_deepest_historical_set_id([], client, rx_date)
 
 def test_extract_section_text_with_tables_and_lists():
     """
