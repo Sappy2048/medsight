@@ -95,7 +95,8 @@ async def test_temporal_find_interaction_matching_logic():
 
 # ─── Task 1.3: Severity Clamping ─────────────────────────────────────────────
 
-def test_extraction_severity_clamping():
+@pytest.mark.asyncio
+async def test_extraction_severity_clamping():
     """
     Vulnerability: LLM hallucinations may output scores outside 0-5.
     Assert: Python firewall clamps severity_score before Pydantic validation.
@@ -109,7 +110,7 @@ def test_extraction_severity_clamping():
         }
     ]
     
-    records = _assemble_records(
+    records = await _assemble_records(
         raw_interactions=raw_llm_output,
         section_name="drug_interactions",
         source_drug="Warfarin",
@@ -180,8 +181,8 @@ async def test_is_semantic_drug_match():
     classes = await get_drug_classes("Oxycodone")
     if classes:
         target_class = classes[0]
-        assert await is_semantic_drug_match("Oxycodone", target_class, mock_llm) is True
-        assert await is_semantic_drug_match("Oxycodone", target_class.lower(), mock_llm) is True
+        assert await is_semantic_drug_match("Oxycodone", target_class, mock_llm, patient_drug_classes=classes) is True
+        assert await is_semantic_drug_match("Oxycodone", target_class.lower(), mock_llm, patient_drug_classes=classes) is True
 
     # 3. Tier 5 LLM check: fall back to LLM semantic match
     mock_response = MagicMock()

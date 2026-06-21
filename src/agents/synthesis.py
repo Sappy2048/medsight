@@ -75,12 +75,16 @@ async def synthesize_final_report(
     violation_notes = []
     integrity_flag = False
     
-    # Check 1: Risk Level Integrity Guard
+    # Check 1: Risk Level Integrity Guard (considers both temporal diffs and stable baseline alerts)
     max_severity = 0
     if diff_results:
         scores = [d.present_severity_score for d in diff_results if d.present_severity_score is not None]
         if scores:
             max_severity = max(scores)
+    if report.alerts:
+        alert_scores = [a.present_severity_score for a in report.alerts if a.present_severity_score is not None]
+        if alert_scores:
+            max_severity = max(max_severity, max(alert_scores))
             
     if report.overall_risk_level == "CRITICAL" and max_severity < 5:
         note = f"Risk level CRITICAL but max severity is {max_severity}"
@@ -128,6 +132,17 @@ async def synthesize_final_report(
                     "present_severity_score": d.present_severity_score,
                     "present_version_date": d.present_version_date,
                     "present_recommendation": d.present_recommendation
+                })
+        # Add STABLE_RISK baseline alerts as anchors so the verifier LLM can validate them
+        for a in report.alerts:
+            if a.change_type == "STABLE_RISK":
+                anchors.append({
+                    "drug_pair": a.drug_pair,
+                    "change_type": a.change_type,
+                    "severity_delta": a.severity_delta,
+                    "present_severity_score": a.present_severity_score,
+                    "present_version_date": report.prescription_date,
+                    "present_recommendation": a.clinical_reasoning
                 })
         
         user_content = f"""\

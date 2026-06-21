@@ -15,6 +15,7 @@ from src.config import (
     TOGETHER_API_KEY,
     QDRANT_URL,
     QDRANT_API_KEY,
+    QDRANT_COLLECTION,
 )
 from src.agents.graph import run_medsight, run_copilot_qa, build_medsight_graph, MedSightState
 from src.schemas.synthesizer_schema import MedSightFinalReport
@@ -24,6 +25,9 @@ from src.services.rag_engine import FASTEMBED_MODEL
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("medsight.api")
+
+# Startup validation logger
+startup_logger = logging.getLogger("medsight.startup")
 
 app = FastAPI(
     title="MedSight Drug Safety Intelligence System",
@@ -93,6 +97,52 @@ MedSightEvaluateResponse = Union[MedSightSuccessResponse, MedSightClarificationR
 class HealthResponse(BaseModel):
     status: str
     qdrant_connected: bool
+
+@app.on_event("startup")
+async def startup_event():
+    """Run startup validations and log configuration status."""
+    startup_logger.info("=" * 60)
+    startup_logger.info("MedSight API Starting Up")
+    startup_logger.info("=" * 60)
+    
+    # Log configuration status
+    startup_logger.info(f"FastEmbed cache directory: {os.environ.get('FASTEMBED_CACHE_DIR', 'Not set')}")
+    startup_logger.info(f"Cache directory exists: {os.path.isdir(os.environ.get('FASTEMBED_CACHE_DIR', ''))}")
+    
+    # Check Qdrant configuration
+    if QDRANT_URL:
+        startup_logger.info(f"Qdrant URL configured: {QDRANT_URL[:30]}..." if len(QDRANT_URL) > 30 else f"Qdrant URL configured: {QDRANT_URL}")
+    else:
+        startup_logger.error("CRITICAL: QDRANT_URL is not set. Vector search will fail.")
+    
+    if TOGETHER_API_KEY:
+        startup_logger.info("Together AI API key is configured")
+    else:
+        startup_logger.error("CRITICAL: TOGETHER_API_KEY is not set. LLM calls will fail.")
+    
+    # Verify frontend file exists
+    frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html")
+    if os.path.exists(frontend_path):
+        startup_logger.info(f"Frontend file found: {frontend_path}")
+    else:
+        startup_logger.error(f"Frontend file NOT found at: {frontend_path}")
+    
+    # Test Qdrant connectivity
+    try:
+        collections = qdrant_client.get_collections()
+        collection_names = [c.name for c in collections.collections]
+        startup_logger.info(f"Qdrant connected successfully. Collections: {collection_names}")
+        
+        # Check for required collection
+        if QDRANT_COLLECTION in collection_names:
+            startup_logger.info(f"Required collection '{QDRANT_COLLECTION}' exists")
+        else:
+            startup_logger.warning(f"Required collection '{QDRANT_COLLECTION}' NOT found. Run ETL pipeline.")
+    except Exception as e:
+        startup_logger.error(f"Qdrant connection failed: {e}")
+        startup_logger.error("Vector search functionality will not work.")
+    
+    startup_logger.info("=" * 60)
 
 @app.get("/health", response_model=HealthResponse, tags=["Diagnostics"])
 async def health_check():

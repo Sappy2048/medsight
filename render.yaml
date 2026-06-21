@@ -1,0 +1,32 @@
+# Render Blueprint for MedSight
+# This file allows one-click deployment to Render
+# See: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: medsight-api
+    runtime: docker
+    repo: https://github.com/Sappy2048/medsight.git
+    plan: starter  # Free tier: 512 MB RAM, 0.1 CPU, sleeps after 15 min inactivity
+    region: oregon  # Change to singapore or frankfurt if closer to your users
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: FASTEMBED_CACHE_DIR
+        value: /app/data/fastembed_cache
+      - key: QDRANT_URL
+        sync: false  # You must set this in Render dashboard after Qdrant Cloud setup
+      - key: QDRANT_API_KEY
+        sync: false  # You must set this in Render dashboard after Qdrant Cloud setup
+      - key: TOGETHER_API_KEY
+        sync: false  # You must set this in Render dashboard
+    healthCheckPath: /health
+    # Render provides PORT env var automatically; don't set it here
+
+# Optional: Add a managed PostgreSQL database if you want persistence
+# databases:
+#   - name: medsight-db
+#     databaseName: medsight
+#     user: medsight
+#     plan: starter
+#     region: oregon

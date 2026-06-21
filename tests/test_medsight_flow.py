@@ -9,6 +9,9 @@ from src.agents.graph import run_medsight, run_copilot_qa
 from src.schemas.synthesizer_schema import MedSightFinalReport
 from src.config import TOGETHER_BASE_URL, TOGETHER_API_KEY
 
+import pytest
+
+@pytest.mark.asyncio
 async def test_full_agentic_flow():
     load_dotenv()
     logging.basicConfig(level=logging.INFO)

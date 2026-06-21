@@ -18,7 +18,7 @@ Graceful degradation:
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Literal, Tuple
+from typing import Optional, Literal, Tuple, Dict, Any
 from openai import AsyncOpenAI
 from qdrant_client import QdrantClient
 
@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 # Constants
 _QDRANT_SIMILARITY_THRESHOLD = 0.75
 _MAX_LLM_RETRIES = 2
+
+# Minimum present_severity_score that triggers a baseline (non-temporal) alert.
+# 3 = "Use caution" — captures Avoid(4) and Contraindicated(5) as well.
+_BASELINE_RISK_THRESHOLD = 3
 
 # ─── Phase 1: Deterministic Enrichment ────────────────────────────────────────
 
@@ -78,6 +82,7 @@ RiskLevel = Literal["CRITICAL", "HIGH", "MODERATE", "LOW", "NONE"]
 def _classify_overall_risk(alerts: list[DrugPairAlert]) -> RiskLevel:
     """
     Pure rule-based risk classification.
+    Handles both temporal-change alerts and STABLE_RISK baseline alerts.
     """
     if not alerts:
         return "NONE"
@@ -91,11 +96,16 @@ def _classify_overall_risk(alerts: list[DrugPairAlert]) -> RiskLevel:
     if max_severity >= 4 or (has_added and max_delta >= 3):
         return "HIGH"
     
-    # MODERATE: any is_clinically_significant alert that didn't hit HIGH
-    if any(a.severity_delta >= 2 or a.change_type in ("ADDED", "REMOVED") for a in alerts):
+    # MODERATE: significant temporal change OR any stable interaction at score >= 3
+    if any(
+        a.severity_delta >= 2
+        or a.change_type in ("ADDED", "REMOVED")
+        or (a.change_type == "STABLE_RISK" and (a.present_severity_score or 0) >= 3)
+        for a in alerts
+    ):
         return "MODERATE"
     
-    # LOW: significant pairs exist but delta < 2
+    # LOW: some alerts exist but none hit above thresholds
     if alerts:
         return "LOW"
     
@@ -105,17 +115,24 @@ def _classify_overall_risk(alerts: list[DrugPairAlert]) -> RiskLevel:
 
 _SYNTHESIS_SYSTEM_PROMPT = """\
 You are a senior clinical pharmacist specializing in drug safety.
-Your job is to synthesize a final clinical alert for a treating physician based on 
-newly strengthened FDA warnings detected for their patient's prescription.
+Your job is to synthesize a final clinical alert for a treating physician based on
+driving drug safety findings for their patient's prescription.
 
 INPUTS PROVIDED:
-1. List of DrugPairAlerts (verified facts, severity scores, and clinical reasoning)
+1. List of DrugPairAlerts with two categories:
+   a. TEMPORAL CHANGES: Interactions whose FDA severity was strengthened/weakened since prescription.
+      (change_type: ADDED, REMOVED, STRENGTHENED, WEAKENED)
+   b. STABLE RISKS: Interactions with a high baseline severity score that were already present
+      when the drug was prescribed and remain active today — these are NOT label changes,
+      but are clinically critical adverse interactions that must be communicated.
+      (change_type: STABLE_RISK)
 2. ICMR Guideline context (if available)
 3. Prescription metadata
 
 RULES:
 - Be concise, professional, and action-oriented.
-- Focus on the clinical significance of the changes.
+- STABLE_RISK alerts with score >= 4 (Avoid/Contraindicated) are HIGH clinical priority.
+  Mention them explicitly in both summary and recommended_action.
 - Do NOT alter any pre-computed facts (risk level, dates, scores).
 - If multiple alerts exist, highlight the compounding risk.
 - Address the physician directly.
@@ -164,41 +181,170 @@ async def _generate_synthesis(
             "Review flagged drug interactions and adjust prescription as per clinical judgement."
         )
 
+# ─── Phase 1.5: Baseline Interaction Alerts ──────────────────────────────────
+
+async def _build_baseline_alerts(
+    extraction_results: Dict[str, Any],
+    resolved_drugs:     list[ResolvedDrug],
+    existing_pairs:     set[str],
+    llm_client:         AsyncOpenAI,
+) -> list[DrugPairAlert]:
+    """
+    Scans the *present* ExtractionResult for each drug and creates a DrugPairAlert
+    for any high-severity interaction that:
+      (a) has present_severity_score >= _BASELINE_RISK_THRESHOLD, and
+      (b) involves another drug in this prescription (matched semantically), and
+      (c) has not already been reported as a temporal-change alert.
+
+    These are "STABLE_RISK" alerts — clinically significant even with no label revision.
+    """
+    from src.services.rxnorm_client import get_drug_classes
+    from src.agents.temporal import is_semantic_drug_match
+
+    # Pre-fetch drug classes for all generics in the prescription to avoid repeated API calls
+    prescription_classes: dict[str, list[str]] = {}
+    for drug in resolved_drugs:
+        for gen_name in drug.generic_names:
+            try:
+                classes = await get_drug_classes(gen_name)
+                prescription_classes[gen_name] = classes
+            except Exception as e:
+                logger.warning(f"Failed to fetch drug classes for '{gen_name}': {e}")
+                prescription_classes[gen_name] = []
+
+    baseline_alerts: list[DrugPairAlert] = []
+
+    for source_drug, versions in extraction_results.items():
+        present_ext = versions.get("present") if isinstance(versions, dict) else None
+        if present_ext is None:
+            continue
+
+        # Support both ExtractionResult objects and plain dicts (defensive)
+        if hasattr(present_ext, "interactions"):
+            interactions = present_ext.interactions
+        elif isinstance(present_ext, dict):
+            interactions = present_ext.get("interactions", [])
+        else:
+            continue
+
+        for record in interactions:
+            # Handle both InteractionRecord objects and plain dicts
+            if hasattr(record, "target_drug"):
+                target_drug      = record.target_drug
+                severity_score   = record.severity_score
+                recommendation   = record.recommendation_text
+                warning_text     = record.warning_text
+            elif isinstance(record, dict):
+                target_drug      = record.get("target_drug", "")
+                severity_score   = record.get("severity_score", 0)
+                recommendation   = record.get("recommendation_text", "")
+                warning_text     = record.get("warning_text")
+            else:
+                continue
+
+            if not target_drug or severity_score < _BASELINE_RISK_THRESHOLD:
+                continue
+
+            # Semantically match the label's target_drug against all other drugs in this prescription
+            matched_generic = None
+            for drug in resolved_drugs:
+                for gen_name in drug.generic_names:
+                    # Prevent matching a drug to itself
+                    if is_drug_match(gen_name, source_drug):
+                        continue
+
+                    classes = prescription_classes.get(gen_name)
+                    if await is_semantic_drug_match(
+                        patient_drug=gen_name,
+                        label_target=target_drug,
+                        llm_client=llm_client,
+                        patient_drug_classes=classes,
+                    ):
+                        matched_generic = gen_name
+                        break
+                if matched_generic:
+                    break
+
+            if not matched_generic:
+                continue
+
+            # Deduplicate — canonical sorted key matches both orderings
+            pair_key = " + ".join(sorted([source_drug, matched_generic]))
+            forward  = f"{source_drug} + {matched_generic}"
+            if pair_key in existing_pairs or forward in existing_pairs:
+                continue
+            existing_pairs.add(pair_key)
+
+            # Build clinical reasoning from raw label text
+            parts: list[str] = []
+            if recommendation:
+                parts.append(recommendation)
+            if warning_text:
+                parts.append(f"Warning: {warning_text}")
+            clinical_reasoning = (
+                " | ".join(parts)
+                if parts
+                else f"Active {source_drug}–{matched_generic} interaction documented in current FDA label (severity {severity_score}/5)."
+            )
+
+            baseline_alerts.append(DrugPairAlert(
+                drug_pair=forward,
+                change_type="STABLE_RISK",
+                severity_delta=0,
+                present_severity_score=severity_score,
+                clinical_reasoning=clinical_reasoning,
+                key_concern=(
+                    f"{source_drug} + {matched_generic}: active FDA interaction at severity {severity_score}/5 — "
+                    "no recent label change, but interaction is clinically active."
+                ),
+                confidence="high",  # Deterministic — sourced directly from FDA label
+                dose_context=_get_dose_context(matched_generic, resolved_drugs),
+                exposure_days=None,  # No temporal change to measure exposure from
+            ))
+
+    return baseline_alerts
+
+
 # ─── Public Entry Point ───────────────────────────────────────────────────────
 
 async def analyze_patient_impact(
-    diffs:             list[Tuple[DiffResult, dict]],
-    resolved_drugs:    list[ResolvedDrug],
-    prescription_date: str,
-    llm_client:       AsyncOpenAI,
-    qdrant_client:     Optional[QdrantClient] = None,
+    diffs:              list[Tuple[DiffResult, dict]],
+    resolved_drugs:     list[ResolvedDrug],
+    prescription_date:  str,
+    llm_client:         AsyncOpenAI,
+    qdrant_client:      Optional[QdrantClient] = None,
+    extraction_results: Optional[Dict[str, Any]] = None,
 ) -> PatientImpactReport:
     """
     Main entry point for Agent 5.
+
+    Two-pass alert generation:
+      Phase 1  — Temporal alerts: diffs where the FDA label severity CHANGED since prescription.
+      Phase 1.5 — Baseline alerts: interactions where the severity is HIGH *now* but was not
+                  tracked as a diff (UNCHANGED or data_unavailable). These are clinically
+                  critical adverse interactions the physician must still be informed of.
     """
     alerts: list[DrugPairAlert] = []
+    seen_pairs: set[str] = set()  # Deduplication key shared across both passes
     
-    # Phase 1: Deterministic Enrichment
-    source_counts = {}
+    # ── Phase 1: Temporal Diff Alerts ─────────────────────────────────────────
+    source_counts: dict[str, int] = {}
     for diff, reasoning in diffs:
-        # Phase 1 Filter: two independent gates
         if diff.data_unavailable:
             logger.info(f"Skipping {diff.drug_pair} — historical data unavailable")
             continue
-            
+
         if not diff.is_clinically_significant and diff.change_type == "UNCHANGED":
-            logger.info(f"Skipping {diff.drug_pair} — unchanged and not clinically significant")
+            logger.info(f"Skipping {diff.drug_pair} — unchanged, not clinically significant")
             continue
-            
+
         if not diff.is_clinically_significant:
             logger.info(f"Skipping {diff.drug_pair} — not clinically significant (delta={diff.severity_delta})")
             continue
-            
-        # Parse drugs from pair "Source + Target"
+
         drugs = diff.drug_pair.split(" + ")
         source_drug = drugs[0]
         target_drug = drugs[1]
-        
         source_counts[source_drug] = source_counts.get(source_drug, 0) + 1
 
         alert = DrugPairAlert(
@@ -213,9 +359,27 @@ async def analyze_patient_impact(
             dose_context=_get_dose_context(target_drug, resolved_drugs)
         )
         alerts.append(alert)
+        seen_pairs.add(" + ".join(sorted(drugs)))
 
-    # Sort alerts by severity (highest score first, then delta)
-    alerts.sort(key=lambda x: (x.present_severity_score or 0, x.severity_delta), reverse=True)
+    # ── Phase 1.5: Baseline Interaction Alerts ────────────────────────────────
+    # Surface high-severity interactions that are clinically active but had no
+    # temporal label change (UNCHANGED diffs or data_unavailable cases).
+    if extraction_results:
+        baseline = await _build_baseline_alerts(
+            extraction_results=extraction_results,
+            resolved_drugs=resolved_drugs,
+            existing_pairs=seen_pairs,  # mutated in-place to prevent duplicates
+            llm_client=llm_client,
+        )
+        if baseline:
+            logger.info(f"Phase 1.5: {len(baseline)} baseline STABLE_RISK alert(s) added")
+        alerts.extend(baseline)
+
+    # Sort: temporal changes first (severity_delta > 0), then baseline by score
+    alerts.sort(
+        key=lambda x: (x.present_severity_score or 0, x.severity_delta),
+        reverse=True
+    )
 
     # Phase 2: RAG Retrieval (Top alert only)
     icmr_guideline_used = False

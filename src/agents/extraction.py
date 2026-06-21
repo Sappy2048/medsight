@@ -9,6 +9,7 @@ from openai import AsyncOpenAI
 from src.config import LLM_MODEL, SEVERITY_ONTOLOGY
 from src.schemas.fda_schema import FDALabelVersion
 from src.schemas.diff_schema import ExtractionResult, InteractionRecord
+from src.services.rxnorm_client import get_drug_classes
 
 logger = logging.getLogger(__name__)
 
@@ -79,23 +80,16 @@ FIELD DEFINITIONS:
                         context, not just the keyword in isolation.
 
 RULES (non-negotiable):
-1. Extract ONLY interactions where a specific drug name is explicitly mentioned.
-   Drug class warnings (e.g. "NSAIDs", "anticoagulants") without a specific
-   named drug do NOT qualify — skip them.
-2. The target_drug must be a completely different active ingredient/compound than the source_drug. 
-   Never extract the source drug interacting with itself.
-3. Extract ONLY true Drug-Drug interactions. Do NOT extract drug-disease interactions 
-   (e.g., pregnancy, liver failure, renal impairment) or patient allergies/hypersensitivities.
-4. severity_text must be copied verbatim from the label. Do not paraphrase.
-5. severity_score must reflect the true clinical severity of the interaction
-   as described in the full context — not just the literal keyword match.
-   Example: "use is not recommended due to risk of fatal hemorrhage" should
-   score 4 ("avoid"), not 1 ("monitor"), even if the word "avoid" is absent.
-6. If no specific named drug interactions are present, return an empty array.
-7. Never invent a drug name not present in the text.
-8. Clean text blocks: Normalize and compress the string payloads for recommendation_text and 
-   warning_text. Strip out any redundant, consecutive repeating whitespaces, tab spacing, or 
-   multiple back-to-back newline breaks (\n\n\n) while preserving the exact verbatim clinical words.
+1. Extract EVERY interacting drug, drug class, or food mentioned.
+   - CRITICAL: You MUST extract drug class warnings (e.g., "NSAIDs", "corticosteroids", "anticoagulants") as valid target_drugs.
+2. Broad Definition of Interaction: You must extract warnings where the concomitant use of another drug (or drug class) increases the risk of a severe adverse event (e.g., "The risk of tendon rupture is increased in patients taking corticosteroids"). In this case, "corticosteroids" is the target_drug.
+3. The target_drug must be a completely different active ingredient/compound than the source_drug. Never extract the source drug interacting with itself.
+4. Extract ONLY true Drug-Drug or Drug-Class interactions. Do NOT extract drug-disease interactions (e.g., pregnancy, liver failure, renal impairment) or patient allergies/hypersensitivities.
+5. severity_text must be copied verbatim from the label. Do not paraphrase.
+6. severity_score must reflect the true clinical severity of the interaction as described in the full context — not just the literal keyword match. Example: "use is not recommended due to risk of fatal hemorrhage" should score 4 ("avoid").
+7. If no specific named drug interactions are present, return an empty array.
+8. Never invent a drug name not present in the text.
+9. Clean text blocks: Normalize and compress the string payloads for recommendation_text and warning_text. Strip out any redundant, consecutive repeating whitespaces or tab spacing.
 
 OUTPUT FORMAT (strict JSON, no markdown, no explanation outside JSON):
 {{
@@ -329,7 +323,7 @@ async def _extract_section(
 
 # ─── Assembler ────────────────────────────────────────────────────────────────
 
-def _assemble_records(
+async def _assemble_records(
     raw_interactions: list[dict],
     section_name: InteractionSection,
     source_drug: str,
@@ -338,9 +332,18 @@ def _assemble_records(
 ) -> list[InteractionRecord]:
     """
     Converts raw LLM output dicts into validated InteractionRecord objects.
+    Filters out self-referential interactions including class-based self-references
+    (e.g., Warfarin warning against anticoagulants).
     """
     records: list[InteractionRecord] = []
     clean_source = source_drug.lower().strip()
+    
+    # Pre-fetch drug classes for the source drug to check for class-based self-references
+    source_drug_classes: list[str] = []
+    try:
+        source_drug_classes = await get_drug_classes(source_drug)
+    except Exception as e:
+        logger.debug(f"Could not fetch drug classes for '{source_drug}': {e}")
 
     for raw in raw_interactions:
         try:
@@ -351,12 +354,33 @@ def _assemble_records(
 
             clean_target = str(target_drug_raw).lower().strip()
 
+            # Tier 1: Direct name match
             if clean_target == clean_source or clean_source in clean_target or clean_target in clean_source:
                 logger.debug(
                     f"Filtered self-referential record: target='{target_drug_raw}' "
                     f"source='{source_drug}' section='{section_name}'"
                 )
                 continue
+            
+            # Tier 2: Class-based self-reference (e.g., Warfarin -> anticoagulants)
+            # Check if target is a class that the source drug belongs to
+            if source_drug_classes:
+                target_lower = clean_target
+                is_self_referential_class = False
+                for drug_class in source_drug_classes:
+                    class_lower = drug_class.lower().strip()
+                    # Check if target is the class name or a substring of it
+                    if target_lower in class_lower or class_lower in target_lower:
+                        logger.debug(
+                            f"Filtered class-based self-reference: target='{target_drug_raw}' "
+                            f"source='{source_drug}' belongs to class '{drug_class}' "
+                            f"section='{section_name}'"
+                        )
+                        is_self_referential_class = True
+                        break
+                
+                if is_self_referential_class:
+                    continue
 
             raw_score = int(raw.get("severity_score", 0))
             severity_score = max(0, min(5, raw_score))
@@ -433,7 +457,7 @@ async def extract_interactions(
             continue
 
         raw_list = cast(list[dict], result)
-        records = _assemble_records(
+        records = await _assemble_records(
             raw_interactions=raw_list,
             section_name=section_name,
             source_drug=source_drug,

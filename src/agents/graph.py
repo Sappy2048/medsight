@@ -245,7 +245,8 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
             resolved_drugs=state["resolved_drugs"],
             prescription_date=prescription_date_str,
             llm_client=llm_client,
-            qdrant_client=qdrant_client
+            qdrant_client=qdrant_client,
+            extraction_results=state.get("extraction_results", {}),
         )
         return {"impact_report": impact_report}
 

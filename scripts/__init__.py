@@ -1,0 +1,1 @@
+# Scripts package for MedSight deployment utilities
