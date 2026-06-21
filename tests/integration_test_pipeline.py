@@ -169,6 +169,8 @@ def display_stage3(state: dict):
             print(f"     SPL ID         : {past_label.spl_id}")
             print(f"     Effective time : {past_label.effective_time}")
             _print_label_preview("boxed_warning",     past_label.sections.boxed_warning)
+            _print_label_preview("contraindications", past_label.sections.contraindications)
+            _print_label_preview("warnings",          past_label.sections.warnings)
             _print_label_preview("drug_interactions", past_label.sections.drug_interactions)
         else:
             _warn(f"No historical label found for {generic}.")
@@ -178,6 +180,8 @@ def display_stage3(state: dict):
             print(f"     SPL ID         : {present_label.spl_id}")
             print(f"     Effective time : {present_label.effective_time}")
             _print_label_preview("boxed_warning",     present_label.sections.boxed_warning)
+            _print_label_preview("contraindications", present_label.sections.contraindications)
+            _print_label_preview("warnings",          present_label.sections.warnings)
             _print_label_preview("drug_interactions", present_label.sections.drug_interactions)
         else:
             _warn(f"No current label found for {generic}.")

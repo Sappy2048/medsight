@@ -28,6 +28,8 @@ from src.config import LLM_MODEL, SEVERITY_ONTOLOGY
 from src.schemas.diff_schema import ExtractionResult, InteractionRecord, DiffResult
 from src.services.rxnorm_client import get_drug_classes
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 2
@@ -127,24 +129,31 @@ async def _is_semantic_match_llm(
 async def is_semantic_drug_match(
     patient_drug: str,
     label_target: str,
-    llm_client: AsyncOpenAI
+    llm_client: AsyncOpenAI,
+    patient_drug_classes: Optional[list[str]] = None,
 ) -> bool:
-    """Master 5-Tier Matching Logic."""
+    """
+    Master 5-Tier Matching Logic.
+    
+    Args:
+        patient_drug: The drug name to match (from patient prescription).
+        label_target: The drug name or class from the FDA label.
+        llm_client: Shared AsyncOpenAI client for LLM fallback.
+        patient_drug_classes: Optional pre-computed drug classes for patient_drug.
+                             If not provided, Tier 4 RxClass lookup is skipped.
+    """
     # Tiers 1-3: Fast local string/fuzzy check
     if is_drug_match(patient_drug, label_target):
         return True
 
-    # Tier 4: RxClass API Semantic Match
-    try:
-        classes = await get_drug_classes(patient_drug)
+    # Tier 4: RxClass API Semantic Match (only if precomputed classes provided)
+    if patient_drug_classes is not None:
         label_lower = label_target.lower().strip()
-        for drug_class in classes:
+        for drug_class in patient_drug_classes:
             class_lower = drug_class.lower().strip()
             if label_lower in class_lower or class_lower in label_lower:
                 logger.info(f"RxClass match fired: '{patient_drug}' in class '{drug_class}'")
                 return True
-    except Exception as e:
-        logger.warning(f"RxClass API failed for {patient_drug}: {e}")
 
     # Tier 5: LLM Fallback
     logger.debug(f"Falling back to LLM semantic match for {patient_drug} vs {label_target}")
@@ -159,6 +168,7 @@ async def _find_interaction(
     target_drug: str,
     llm_client: AsyncOpenAI,
     section: Optional[str] = None,
+    http_client: Optional[httpx.AsyncClient] = None,
 ) -> Optional[InteractionRecord]:
     """
     Find the best-matching InteractionRecord for target_drug within one
@@ -167,6 +177,14 @@ async def _find_interaction(
     If multiple sections mention the same drug, the highest-severity record
     is returned (most conservative clinical posture).
     """
+    # Hoist drug class lookup: fetch once before the loop to avoid N API calls
+    target_drug_classes: Optional[list[str]] = None
+    try:
+        target_drug_classes = await get_drug_classes(target_drug, http_client)
+    except Exception as e:
+        logger.warning(f"Failed to fetch drug classes for '{target_drug}': {e}")
+        target_drug_classes = None
+
     matches: list[InteractionRecord] = []
 
     for interaction in extraction.interactions:
@@ -174,7 +192,12 @@ async def _find_interaction(
         if section is not None and interaction.section != section:
             continue
 
-        if await is_semantic_drug_match(target_drug, interaction.target_drug, llm_client):
+        if await is_semantic_drug_match(
+            target_drug, 
+            interaction.target_drug, 
+            llm_client,
+            patient_drug_classes=target_drug_classes,
+        ):
             matches.append(interaction)
 
     if not matches:
@@ -371,6 +394,7 @@ async def compute_temporal_diff(
     target_drug: str,
     llm_client: AsyncOpenAI,
     prescription_date: Optional[str] = None, # ← NEW: for logging/tracing
+    http_client: Optional[httpx.AsyncClient] = None,
 ) -> tuple[DiffResult, dict]:
     """
     Main entry point for the Temporal Diff Agent.
@@ -427,9 +451,9 @@ async def compute_temporal_diff(
     # ── Normal path ──────────────────────────────────────────────────────────
     past_match = None
     if past is not None:
-        past_match = await _find_interaction(past, target_drug, llm_client)
+        past_match = await _find_interaction(past, target_drug, llm_client, http_client=http_client)
 
-    present_match = await _find_interaction(present, target_drug, llm_client)
+    present_match = await _find_interaction(present, target_drug, llm_client, http_client=http_client)
 
     diff = _build_base_diff(
         target_drug=target_drug,

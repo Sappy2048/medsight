@@ -29,6 +29,10 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Simple in-memory cache for drug class lookups
+# Key: normalized drug name (lowercase), Value: list of class names
+_drug_class_cache: dict[str, list[str]] = {}
+
 # RxNorm REST API base URL.
 # Override via config if your deployment uses a local NLM mirror.
 RXNORM_BASE_URL = "https://rxnav.nlm.nih.gov/REST"
@@ -85,28 +89,51 @@ async def get_rxcui(
     return cuis[0]
 
 
-async def get_drug_classes(drug_name: str) -> list[str]:
+async def get_drug_classes(
+    drug_name: str,
+    http_client: Optional[httpx.AsyncClient] = None,
+) -> list[str]:
     """
     Asynchronously calls the NLM RxClass API to retrieve drug classes
     associated with a specified drug name.
 
+    Results are cached in-memory to avoid redundant API calls for the same drug.
+
     Args:
         drug_name: The name of the generic or branded drug.
+        http_client: Optional shared httpx.AsyncClient. If not provided,
+                     a new client is created for this call (less efficient).
 
     Returns:
         A flat, de-duplicated list of class names (strings) associated with the drug.
         Returns an empty list [] on failure, missing data, or timeout.
     """
+    global _drug_class_cache
+    
+    # Normalize for cache lookup (case-insensitive)
+    cache_key = drug_name.lower().strip()
+    
+    # Check cache first
+    if cache_key in _drug_class_cache:
+        logger.debug("RxClass cache hit for '%s'", drug_name)
+        return _drug_class_cache[cache_key]
+
     url = f"{RXNORM_BASE_URL}/rxclass/class/byDrugName.json"
     params = {"drugName": drug_name}
 
     logger.debug("RxClass request: GET %s | params=%s", url, params)
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
+        if http_client is not None:
+            # Use injected shared client (preferred - connection pooling)
+            response = await http_client.get(url, params=params)
+        else:
+            # Fall back to creating a new client (legacy behavior)
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(url, params=params)
+        
+        response.raise_for_status()
+        data = response.json()
 
         drug_info_list = data.get("rxclassDrugInfoList", {}).get("rxclassDrugInfo", [])
         
@@ -126,6 +153,10 @@ async def get_drug_classes(drug_name: str) -> list[str]:
                 unique_classes.append(c)
 
         logger.debug("RxClass: resolved '%s' to classes: %s", drug_name, unique_classes)
+        
+        # Store in cache
+        _drug_class_cache[cache_key] = unique_classes
+        
         return unique_classes
 
     except Exception as e:

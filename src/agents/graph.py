@@ -176,33 +176,43 @@ def create_nodes(llm_client: AsyncOpenAI, qdrant_client: QdrantClient, db_pool: 
         reasoning_list = []
         extraction_results: Dict[str, Any] = {}
         
-        # Concurrent workflow execution for an isolated source drug
-        async def process_source_generic(
-            source_generic: str, past_label: Any, present_label: Any
-        ) -> Tuple[str, Any, Any, List[Tuple[Any, Any]]]:
-            # SPEED TWEAK: Extract past and present labels simultaneously
-            past_task = extract_interactions(past_label, source_generic, llm_client)
-            present_task = extract_interactions(present_label, source_generic, llm_client)
-            past_ext, present_ext = await asyncio.gather(past_task, present_task)
-            
-            other_generics = [g for g in all_generics if g != source_generic]
-            
-            # SPEED TWEAK: Fan out the entire combination target comparison matrix simultaneously
-            diff_tasks = [
-                compute_temporal_diff(past_ext, present_ext, target, llm_client, prescription_date_str)
-                for target in other_generics
-            ]
-            diff_results = await asyncio.gather(*diff_tasks)
-            # Return extraction results alongside diffs so state can surface them
-            return source_generic, past_ext, present_ext, list(diff_results)
+        import httpx
+        # Shared http client for connection pooling across all temporal diff calls
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            # Concurrent workflow execution for an isolated source drug
+            async def process_source_generic(
+                source_generic: str, past_label: Any, present_label: Any
+            ) -> Tuple[str, Any, Any, List[Tuple[Any, Any]]]:
+                # SPEED TWEAK: Extract past and present labels simultaneously
+                past_task = extract_interactions(past_label, source_generic, llm_client)
+                present_task = extract_interactions(present_label, source_generic, llm_client)
+                past_ext, present_ext = await asyncio.gather(past_task, present_task)
+                
+                other_generics = [g for g in all_generics if g != source_generic]
+                
+                # SPEED TWEAK: Fan out the entire combination target comparison matrix simultaneously
+                diff_tasks = [
+                    compute_temporal_diff(
+                        past_ext, 
+                        present_ext, 
+                        target, 
+                        llm_client, 
+                        prescription_date_str,
+                        http_client=http_client
+                    )
+                    for target in other_generics
+                ]
+                diff_results = await asyncio.gather(*diff_tasks)
+                # Return extraction results alongside diffs so state can surface them
+                return source_generic, past_ext, present_ext, list(diff_results)
 
-        # HIGH CONCURRENCY: Loop natively scales across every resolved constituent salt from the history dictionary
-        source_tasks = [
-            process_source_generic(source_generic, past_label, present_label)
-            for source_generic, (past_label, present_label) in state["label_history"].items()
-        ]
-        
-        source_results = await asyncio.gather(*source_tasks, return_exceptions=True)
+            # HIGH CONCURRENCY: Loop natively scales across every resolved constituent salt from the history dictionary
+            source_tasks = [
+                process_source_generic(source_generic, past_label, present_label)
+                for source_generic, (past_label, present_label) in state["label_history"].items()
+            ]
+            
+            source_results = await asyncio.gather(*source_tasks, return_exceptions=True)
         
         for result in source_results:
             if isinstance(result, BaseException):
