@@ -35,5 +35,5 @@ python-dotenv
 # neo4j                  # Neo4j AuraDB driver
 qdrant-client          # Vector DB for ICMR RAG
 fastembed              # Fast embedding model for Qdrant ingestion
-# PyMuPDF                # ICMR PDF extraction (pip install pymupdf)
+pymupdf4llm              # ICMR PDF extraction 
 # sentence-transformers  # BGE-Reranker Large
