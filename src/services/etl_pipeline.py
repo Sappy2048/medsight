@@ -149,19 +149,19 @@ def _split_markdown(markdown: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> List
 
 
 _SYSTEM_PROMPT = (
-    "You are a clinical data extractor.\n"
-    "Read the following medical guideline text.\n"
-    "Identify any specific drugs mentioned.\n"
-    "For each drug, extract the clinical advice and classify it as one of:\n"
-    "  - 'recommendation'   : general best-practice advice\n"
+    "You are a strict clinical data extractor. Read the following medical guideline text.\n"
+    "Identify any specific drugs or drug classes mentioned.\n"
+    "IF NO SPECIFIC DRUGS ARE MENTIONED, YOU MUST RETURN AN EMPTY ARRAY: {\"chunks\": []}\n"
+    "Do NOT create placeholder entries like 'No specific drugs mentioned'.\n"
+    "For each drug found, extract the clinical advice and classify it strictly as one of:\n"
+    "  - 'recommendation'   : general best-practice advice, treatment pathways\n"
     "  - 'dosage_caution'   : dose adjustment, renal/hepatic caution, age-related\n"
     "  - 'contraindication' : situations where the drug must not be used\n"
-    "Clean up any broken sentences or table fragments into clear, grammatical "
-    "medical prose.\n"
-    "Return ONLY a valid JSON object with a 'chunks' array.\n"
-    "Each element must have exactly three keys: 'drug' (string), "
-    "'category' (one of the three above), 'text' (string).\n"
-    "If no specific drugs are mentioned, return: {\"chunks\": []}"
+    "CRITICAL INSTRUCTIONS FOR THE 'text' FIELD:\n"
+    "1. You MUST include the exact clinical preconditions (e.g., specific HbA1c percentages, lab values, or patient symptoms) that trigger the use of the drug.\n"
+    "2. Synthesize the extraction into a single, highly readable, grammatically correct sentence.\n"
+    "3. Aggressively ignore and remove any irrelevant layout noise, unrelated lab targets (like unrelated BP/LDL goals), or page numbers that bled into the text.\n"
+    "Return ONLY a valid JSON object with a 'chunks' array containing these 3 keys: 'drug', 'category', 'text'."
 )
 
 
@@ -187,7 +187,22 @@ async def _call_llm_with_retry(segment: str, segment_idx: int) -> ExtractedDocum
             )
 
             raw_json = response.choices[0].message.content or "{}"
-            parsed   = ExtractedDocument.model_validate_json(raw_json)
+            raw_json = raw_json.strip()
+            
+            # DEFENSIVE PARSING: Clean any accidental markdown code blocks
+            if raw_json.startswith("```json"):
+                raw_json = raw_json[7:]
+            elif raw_json.startswith("```"):
+                raw_json = raw_json[3:]
+            if raw_json.endswith("```"):
+                raw_json = raw_json[:-3]
+            raw_json = raw_json.strip()
+
+            # DEFENSIVE PARSING: If the LLM returned a raw array, wrap it in our expected object
+            if raw_json.startswith("[") and raw_json.endswith("]"):
+                raw_json = f'{{"chunks": {raw_json}}}'
+
+            parsed = ExtractedDocument.model_validate_json(raw_json)
             logger.debug(
                 "  Segment %d → %d chunk(s) extracted.",
                 segment_idx,

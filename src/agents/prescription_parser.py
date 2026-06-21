@@ -16,12 +16,16 @@ TASK: Parse a raw prescription or clinical query string and return a JSON object
 
 RULES (non-negotiable):
 1. Extract ALL drugs mentioned. Return them in the "drugs" array.
+   - CRITICAL: Include chronic medications, background maintenance therapies, 
+     and drugs the patient is "stabilized on" or "currently taking" if they are 
+     mentioned in the query text. These are active components of the patient's 
+     medication profile and must not be filtered out as clinical history.
 
 2. Brand Name Parsing & Dosage Stripping:
    - Strip ONLY numeric values and explicit strength units (e.g., mg, ml, mcg, %). 
    - Retain all non-numeric brand suffixes (e.g., "Duo", "Forte", "Plus", "XR", "SR", "LS") as they are critical to brand identity.
-   - Examples: "Augmentin 625 Duo" → "Augmentin Duo" | "Clavam 1000" → "Clavam" | "Ascoril LS" → "Ascoril LS".
-   - CRITICAL: Do NOT split Fixed Dose Combination (FDC) brands into separate generic components. Extract the full brand name as a single entry. Generic decomposition is handled downstream.
+   - Parenthetical Guard: If a generic name or explanation is provided inside parentheses after a brand name—e.g., "BrandX (Ibuprofen)"—extract ONLY the preceding brand name ("BrandX"). Do not include the parentheses or their contents in the target_brand_name string.
+   - Examples: "Augmentin 625 Duo" → "Augmentin Duo" | "Brand X (Ibuprofen 400mg)" → "Brand X".
 
 3. Route Normalization & Form Inference:
    - Map EXACTLY to one of: oral | intravenous | topical | subcutaneous | intramuscular | sublingual | inhalation | unknown
